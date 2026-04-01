@@ -97,7 +97,12 @@ fn all_rgb() -> Vec<u8> {
     v
 }
 
-fn moxcms_transform(src: &[u8], fixed: bool, interp: InterpolationMethod) -> Vec<u8> {
+fn moxcms_transform(
+    src: &[u8],
+    fixed: bool,
+    interp: InterpolationMethod,
+    intent: RenderingIntent,
+) -> Vec<u8> {
     let prof = ColorProfile::new_from_slice(ICC_BYTES).unwrap();
     let srgb = ColorProfile::new_srgb();
     let t = prof
@@ -109,7 +114,7 @@ fn moxcms_transform(src: &[u8], fixed: bool, interp: InterpolationMethod) -> Vec
                 prefer_fixed_point: fixed,
                 allow_use_cicp_transfer: false,
                 interpolation_method: interp,
-                rendering_intent: RenderingIntent::RelativeColorimetric,
+                rendering_intent: intent,
                 ..Default::default()
             },
         )
@@ -119,17 +124,10 @@ fn moxcms_transform(src: &[u8], fixed: bool, interp: InterpolationMethod) -> Vec
     dst
 }
 
-fn lcms2_transform(src: &[u8]) -> Vec<u8> {
+fn lcms2_transform(src: &[u8], intent: Intent) -> Vec<u8> {
     let sp = Profile::new_icc(ICC_BYTES).unwrap();
     let dp = Profile::new_srgb();
-    let t = LcmsTransform::new(
-        &sp,
-        PixelFormat::RGB_8,
-        &dp,
-        PixelFormat::RGBA_8,
-        Intent::RelativeColorimetric,
-    )
-    .unwrap();
+    let t = LcmsTransform::new(&sp, PixelFormat::RGB_8, &dp, PixelFormat::RGBA_8, intent).unwrap();
     let mut dst = vec![0u8; (src.len() / 3) * 4];
     t.transform_pixels(src, &mut dst);
     dst
@@ -138,17 +136,65 @@ fn lcms2_transform(src: &[u8]) -> Vec<u8> {
 #[test]
 fn issue_162_fixed_tetrahedral_vs_fixed_trilinear() {
     let src = all_rgb();
-    let tetra = moxcms_transform(&src, true, InterpolationMethod::Tetrahedral);
-    let trilinear = moxcms_transform(&src, true, InterpolationMethod::Linear);
+    let tetra = moxcms_transform(
+        &src,
+        true,
+        InterpolationMethod::Tetrahedral,
+        RenderingIntent::RelativeColorimetric,
+    );
+    let trilinear = moxcms_transform(
+        &src,
+        true,
+        InterpolationMethod::Linear,
+        RenderingIntent::RelativeColorimetric,
+    );
     let s = compare(&tetra, &trilinear, 4);
-    eprintln!("moxcms fixed tetrahedral vs fixed trilinear: {s}");
+    eprintln!("moxcms fixed tetrahedral vs fixed trilinear (relcol): {s}");
 }
 
 #[test]
 fn issue_162_fixed_tetrahedral_vs_lcms2() {
     let src = all_rgb();
-    let tetra = moxcms_transform(&src, true, InterpolationMethod::Tetrahedral);
-    let lcm = lcms2_transform(&src);
+    let tetra = moxcms_transform(
+        &src,
+        true,
+        InterpolationMethod::Tetrahedral,
+        RenderingIntent::RelativeColorimetric,
+    );
+    let lcm = lcms2_transform(&src, Intent::RelativeColorimetric);
     let s = compare(&tetra, &lcm, 4);
-    eprintln!("moxcms fixed tetrahedral vs lcms2: {s}");
+    eprintln!("moxcms fixed tetrahedral vs lcms2 (relcol): {s}");
+}
+
+#[test]
+fn issue_162_perceptual_fixed_tetra_vs_fixed_trilinear() {
+    let src = all_rgb();
+    let tetra = moxcms_transform(
+        &src,
+        true,
+        InterpolationMethod::Tetrahedral,
+        RenderingIntent::Perceptual,
+    );
+    let trilinear = moxcms_transform(
+        &src,
+        true,
+        InterpolationMethod::Linear,
+        RenderingIntent::Perceptual,
+    );
+    let s = compare(&tetra, &trilinear, 4);
+    eprintln!("moxcms fixed tetrahedral vs fixed trilinear (perceptual): {s}");
+}
+
+#[test]
+fn issue_162_perceptual_fixed_tetra_vs_lcms2() {
+    let src = all_rgb();
+    let tetra = moxcms_transform(
+        &src,
+        true,
+        InterpolationMethod::Tetrahedral,
+        RenderingIntent::Perceptual,
+    );
+    let lcm = lcms2_transform(&src, Intent::Perceptual);
+    let s = compare(&tetra, &lcm, 4);
+    eprintln!("moxcms fixed tetrahedral vs lcms2 (perceptual): {s}");
 }
