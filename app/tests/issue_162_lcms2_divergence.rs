@@ -7,6 +7,7 @@
 //!
 //! Run: cargo test --release -p app issue_162 -- --nocapture
 
+use lcms2::{Intent, PixelFormat, Profile, Transform as LcmsTransform};
 use moxcms::{ColorProfile, InterpolationMethod, Layout, RenderingIntent, TransformOptions};
 
 /// The ICC profile embedded in wmc_d4e6bfcba7ee8f83.jpg (Apple Wide Color, v4 A2B-only).
@@ -118,6 +119,22 @@ fn moxcms_transform(src: &[u8], fixed: bool, interp: InterpolationMethod) -> Vec
     dst
 }
 
+fn lcms2_transform(src: &[u8]) -> Vec<u8> {
+    let sp = Profile::new_icc(ICC_BYTES).unwrap();
+    let dp = Profile::new_srgb();
+    let t = LcmsTransform::new(
+        &sp,
+        PixelFormat::RGB_8,
+        &dp,
+        PixelFormat::RGBA_8,
+        Intent::RelativeColorimetric,
+    )
+    .unwrap();
+    let mut dst = vec![0u8; (src.len() / 3) * 4];
+    t.transform_pixels(src, &mut dst);
+    dst
+}
+
 #[test]
 fn issue_162_fixed_tetrahedral_vs_fixed_trilinear() {
     let src = all_rgb();
@@ -125,4 +142,13 @@ fn issue_162_fixed_tetrahedral_vs_fixed_trilinear() {
     let trilinear = moxcms_transform(&src, true, InterpolationMethod::Linear);
     let s = compare(&tetra, &trilinear, 4);
     eprintln!("moxcms fixed tetrahedral vs fixed trilinear: {s}");
+}
+
+#[test]
+fn issue_162_fixed_tetrahedral_vs_lcms2() {
+    let src = all_rgb();
+    let tetra = moxcms_transform(&src, true, InterpolationMethod::Tetrahedral);
+    let lcm = lcms2_transform(&src);
+    let s = compare(&tetra, &lcm, 4);
+    eprintln!("moxcms fixed tetrahedral vs lcms2: {s}");
 }
