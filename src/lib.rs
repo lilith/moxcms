@@ -42,6 +42,8 @@
 )]
 mod chad;
 mod cicp;
+#[macro_use]
+mod transform;
 mod conversions;
 mod dat;
 mod defaults;
@@ -66,7 +68,6 @@ mod reader;
 mod rgb;
 mod safe_math;
 mod tag;
-mod transform;
 mod trc;
 mod writer;
 mod yrg;

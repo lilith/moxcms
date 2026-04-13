@@ -329,6 +329,23 @@ pub trait PointeeSizeExpressible {
     const IS_U16: bool;
 }
 
+/// Asserts that a linearization LUT is large enough for the pixel type `T`'s
+/// full index range, enabling LLVM to elide bounds checks on subsequent
+/// `lut[val._as_usize()]` accesses.
+///
+/// For u8 pixels, asserts `len >= 256` so LLVM proves `movzbl` output < 256 <= len.
+/// For all other types (u16, f32, f64), asserts `len >= 65536` since they all
+/// use u16 as the intermediate index type.
+macro_rules! assert_lin_lut_size {
+    ($lut:expr, $T:ty) => {
+        if <$T>::IS_U8 {
+            assert!($lut.len() >= 256);
+        } else {
+            assert!($lut.len() >= 65536);
+        }
+    };
+}
+
 impl PointeeSizeExpressible for u8 {
     #[inline(always)]
     fn _as_usize(self) -> usize {
