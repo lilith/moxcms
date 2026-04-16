@@ -1,0 +1,94 @@
+name: Benchmarks (cross-platform)
+
+# Runs the app-crate criterion benches on every Linux / macOS / Windows
+# runner × x86_64 / aarch64 combo GitHub Actions has, so regressions in
+# any dispatch path land on a PR author's radar with concrete numbers
+# per platform. Benches take 5-10 minutes apiece and the matrix is six
+# machines, so this workflow only fires on push to `bench-*` branches,
+# PR comments containing `/bench`, and manual dispatch — not on every
+# push to the audit / PR branches.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - 'bench-*'
+  schedule:
+    # Sunday 04:00 UTC — weekly trend baseline, no workload conflict.
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      features:
+        description: "Feature flags to pass to `cargo bench`"
+        required: false
+        default: ""
+
+jobs:
+  bench:
+    name: bench ${{ matrix.platform }}
+    if: github.repository == 'lilith/moxcms'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+          - runner: macos-latest
+            platform: macos-aarch64
+          - runner: windows-latest
+            platform: windows-x86_64
+          - runner: windows-11-arm
+            platform: windows-aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The `lut` bench reads `assets/bench.jpg`; assert it's present so
+      # we fail fast rather than mid-bench with a file-not-found panic.
+      - name: Assert bench fixture present
+        shell: bash
+        run: |
+          test -f assets/bench.jpg \
+            || { echo "::error::assets/bench.jpg missing — bench fixtures must be committed"; exit 1; }
+
+      - name: cargo bench -p app --bench icc
+        working-directory: app
+        run: cargo bench --bench icc -- --save-baseline ${{ matrix.platform }}
+        env:
+          CARGO_INCREMENTAL: 0
+
+      - name: cargo bench -p app --bench lut
+        working-directory: app
+        run: cargo bench --bench lut -- --save-baseline ${{ matrix.platform }}
+        env:
+          CARGO_INCREMENTAL: 0
+
+      - name: Upload criterion results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ matrix.platform }}
+          path: target/criterion
+          if-no-files-found: warn
+
+      - name: Print summary
+        if: always()
+        shell: bash
+        run: |
+          echo "::group::${{ matrix.platform }} bench summary"
+          find target/criterion -name "estimates.json" -print | while read f; do
+            name=$(echo "$f" | sed -E 's|^target/criterion/||; s|/new/estimates.json$||; s|/[0-9]+/new/estimates.json$||')
+            mean_ns=$(python3 -c "import json,sys; d=json.load(open('$f')); print(f\"{d['mean']['point_estimate']:.1f}\")" 2>/dev/null || echo "-")
+            printf '  %8s ns  %s\n' "$mean_ns" "$name"
+          done | sort -n
+          echo "::endgroup::"

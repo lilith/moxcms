@@ -1269,10 +1269,7 @@ mod tests {
             InterpolationMethod::Prism,
             InterpolationMethod::Linear,
         ] {
-            for scale in [
-                BarycentricWeightScale::Low,
-                BarycentricWeightScale::High,
-            ] {
+            for scale in [BarycentricWeightScale::Low, BarycentricWeightScale::High] {
                 let opts = TransformOptions {
                     interpolation_method: method,
                     barycentric_weight_scale: scale,
@@ -1281,11 +1278,15 @@ mod tests {
                 let transform = cmyk
                     .create_transform_8bit(Layout::Rgba, &srgb, Layout::Rgb, opts)
                     .unwrap_or_else(|e| {
-                        panic!("failed to build transform (method={method:?}, scale={scale:?}): {e:?}")
+                        panic!(
+                            "failed to build transform (method={method:?}, scale={scale:?}): {e:?}"
+                        )
                     });
-                transform.transform(&cmyk_in, &mut rgb_out).unwrap_or_else(|e| {
-                    panic!("transform failed (method={method:?}, scale={scale:?}): {e:?}")
-                });
+                transform
+                    .transform(&cmyk_in, &mut rgb_out)
+                    .unwrap_or_else(|e| {
+                        panic!("transform failed (method={method:?}, scale={scale:?}): {e:?}")
+                    });
 
                 // Sanity: the eight distinct CMYK inputs should not all
                 // collapse to the same RGB output. If they do, the
