@@ -1301,6 +1301,155 @@ mod tests {
         }
     }
 
+    // Exercises `Lut3x4::transform` — the 3-channel-to-4-channel LUT
+    // path used when the destination profile is CMYK. `us_swop_coated`
+    // has `lut_b_to_a_*` (Lab->CMYK, 3->4) which drives Lut3x4 when the
+    // profile is the destination.
+    #[cfg(feature = "options")]
+    #[test]
+    fn test_srgb_to_cmyk_all_interpolation_methods() {
+        use std::collections::HashSet;
+        use std::fs;
+
+        let Ok(cmyk_bytes) = fs::read("./assets/us_swop_coated.icc") else {
+            eprintln!("skipped: assets/us_swop_coated.icc unavailable");
+            return;
+        };
+        let cmyk = ColorProfile::new_from_slice(&cmyk_bytes).unwrap();
+        let srgb = ColorProfile::new_srgb();
+
+        let rgb_in: [u8; 24] = [
+            0, 0, 0, //
+            255, 255, 255, //
+            255, 0, 0, //
+            0, 255, 0, //
+            0, 0, 255, //
+            64, 128, 192, //
+            200, 100, 50, //
+            128, 128, 128, //
+        ];
+        let mut cmyk_out = [0u8; 32];
+
+        for method in [
+            InterpolationMethod::Tetrahedral,
+            InterpolationMethod::Pyramid,
+            InterpolationMethod::Prism,
+            InterpolationMethod::Linear,
+        ] {
+            for scale in [BarycentricWeightScale::Low, BarycentricWeightScale::High] {
+                let opts = TransformOptions {
+                    interpolation_method: method,
+                    barycentric_weight_scale: scale,
+                    ..Default::default()
+                };
+                let transform = srgb
+                    .create_transform_8bit(Layout::Rgb, &cmyk, Layout::Rgba, opts)
+                    .unwrap_or_else(|e| {
+                        panic!("failed to build sRGB->CMYK transform (method={method:?}, scale={scale:?}): {e:?}")
+                    });
+                transform.transform(&rgb_in, &mut cmyk_out).unwrap_or_else(|e| {
+                    panic!("sRGB->CMYK transform failed (method={method:?}, scale={scale:?}): {e:?}")
+                });
+                let unique: HashSet<_> = cmyk_out.chunks(4).collect();
+                assert!(
+                    unique.len() > 1,
+                    "method={method:?} scale={scale:?} produced constant CMYK output: {cmyk_out:?}"
+                );
+            }
+        }
+    }
+
+    // Exercises `Lut3x3::transform` — built-in RGB profiles are matrix-
+    // shaper and never hit this path. A synthetic RGB profile with a
+    // 3->3 `lut_a_to_b_*` table forces the Lut3x3 dispatch. Tables are
+    // identity-ish ramps; the test asserts the pipeline completes and
+    // produces non-constant output, not that the colorimetry is correct.
+    #[cfg(feature = "options")]
+    #[test]
+    fn test_synthetic_rgb_lut_to_srgb_all_interpolation_methods() {
+        use crate::profile::{LutDataType, LutStore, LutType, LutWarehouse};
+        use std::collections::HashSet;
+
+        const GRID: u8 = 9;
+        const TABLE_ENTRIES: u16 = 256;
+
+        let ramp: Vec<u16> = (0..3)
+            .flat_map(|_| (0..TABLE_ENTRIES).map(|i| (i as u32 * 257) as u16))
+            .collect();
+
+        let scale_factor = 65535u32 / (GRID - 1) as u32;
+        let mut clut: Vec<u16> = Vec::with_capacity((GRID as usize).pow(3) * 3);
+        for r in 0..GRID {
+            for g in 0..GRID {
+                for b in 0..GRID {
+                    clut.push((r as u32 * scale_factor) as u16);
+                    clut.push((g as u32 * scale_factor) as u16);
+                    clut.push((b as u32 * scale_factor) as u16);
+                }
+            }
+        }
+
+        let lut = LutDataType {
+            num_input_channels: 3,
+            num_output_channels: 3,
+            num_clut_grid_points: GRID,
+            matrix: Matrix3d::IDENTITY,
+            num_input_table_entries: TABLE_ENTRIES,
+            num_output_table_entries: TABLE_ENTRIES,
+            input_table: LutStore::Store16(ramp.clone()),
+            clut_table: LutStore::Store16(clut),
+            output_table: LutStore::Store16(ramp),
+            lut_type: LutType::Lut16,
+        };
+
+        let mut src = ColorProfile::new_srgb();
+        src.pcs = DataColorSpace::Lab;
+        src.lut_a_to_b_perceptual = Some(LutWarehouse::Lut(lut.clone()));
+        src.lut_a_to_b_colorimetric = Some(LutWarehouse::Lut(lut));
+
+        let dst = ColorProfile::new_srgb();
+
+        let rgb_in: [u8; 24] = [
+            0, 0, 0, //
+            255, 255, 255, //
+            255, 0, 0, //
+            0, 255, 0, //
+            0, 0, 255, //
+            64, 128, 192, //
+            200, 100, 50, //
+            128, 128, 128, //
+        ];
+        let mut rgb_out = [0u8; 24];
+
+        for method in [
+            InterpolationMethod::Tetrahedral,
+            InterpolationMethod::Pyramid,
+            InterpolationMethod::Prism,
+            InterpolationMethod::Linear,
+        ] {
+            for scale in [BarycentricWeightScale::Low, BarycentricWeightScale::High] {
+                let opts = TransformOptions {
+                    interpolation_method: method,
+                    barycentric_weight_scale: scale,
+                    ..Default::default()
+                };
+                let transform = src
+                    .create_transform_8bit(Layout::Rgb, &dst, Layout::Rgb, opts)
+                    .unwrap_or_else(|e| {
+                        panic!("failed to build synthetic-LUT->sRGB transform (method={method:?}, scale={scale:?}): {e:?}")
+                    });
+                transform.transform(&rgb_in, &mut rgb_out).unwrap_or_else(|e| {
+                    panic!("synthetic-LUT->sRGB transform failed (method={method:?}, scale={scale:?}): {e:?}")
+                });
+                let unique: HashSet<_> = rgb_out.chunks(3).collect();
+                assert!(
+                    unique.len() > 1,
+                    "method={method:?} scale={scale:?} produced constant output: {rgb_out:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_transform_rgb8() {
         let mut srgb_profile = ColorProfile::new_srgb();
