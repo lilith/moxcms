@@ -52,6 +52,27 @@ pub(crate) struct BarycentricWeight<V> {
     pub w: V,
 }
 
+/// Tell LLVM that three user-supplied indices are all `< BINS` so it drops the
+/// bounds checks on the subsequent `lut[...]` accesses against the compile-
+/// time-known array length. One call at the top of every SIMD `interpolate`
+/// method replaces nine lines of inline `assert_unchecked` plus their SAFETY
+/// comment — edit the invariant in one place.
+///
+/// # Safety
+/// Every index must be `< $bins`. In moxcms the indices originate from
+/// `LutBarycentricReduction::reduce::<_, BINS>` / `::reduce::<_, 256>`, which
+/// returns values in `0..BINS`; callers must uphold that contract.
+macro_rules! assume_lut_bary_bounds {
+    ($in_r:expr, $in_g:expr, $in_b:expr, $bins:expr) => {{
+        unsafe {
+            core::hint::assert_unchecked($in_r < $bins);
+            core::hint::assert_unchecked($in_g < $bins);
+            core::hint::assert_unchecked($in_b < $bins);
+        }
+    }};
+}
+pub(crate) use assume_lut_bary_bounds;
+
 impl BarycentricWeight<f32> {
     pub(crate) fn create_ranged_256<const GRID_SIZE: usize>() -> Box<[BarycentricWeight<f32>; 256]>
     {

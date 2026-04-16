@@ -27,7 +27,7 @@
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #![cfg(feature = "sse_luts")]
-use crate::conversions::interpolator::BarycentricWeight;
+use crate::conversions::interpolator::{BarycentricWeight, assume_lut_bary_bounds};
 use crate::math::FusedMultiplyAdd;
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
@@ -126,28 +126,29 @@ impl<const GRID_SIZE: usize> Fetcher<SseVector> for TetrahedralSseFetchVector<'_
     }
 }
 
-pub(crate) trait SseMdInterpolation {
+pub(crate) trait SseMdInterpolation<const BINS: usize> {
     fn inter3_sse(
         &self,
         table: &[SseAlignedF32],
         in_r: usize,
         in_g: usize,
         in_b: usize,
-        lut: &[BarycentricWeight<f32>],
+        lut: &[BarycentricWeight<f32>; BINS],
     ) -> SseVector;
 }
 
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> TetrahedralSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate(
+    unsafe fn interpolate<const BINS: usize>(
         &self,
         in_r: usize,
         in_g: usize,
         in_b: usize,
-        lut: &[BarycentricWeight<f32>],
+        lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
+        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
         let lut_r = lut[in_r];
         let lut_g = lut[in_g];
         let lut_b = lut[in_b];
@@ -210,14 +211,16 @@ impl<const GRID_SIZE: usize> TetrahedralSse<GRID_SIZE> {
 
 macro_rules! define_inter_sse {
     ($interpolator: ident) => {
-        impl<const GRID_SIZE: usize> SseMdInterpolation for $interpolator<GRID_SIZE> {
+        impl<const GRID_SIZE: usize, const BINS: usize> SseMdInterpolation<BINS>
+            for $interpolator<GRID_SIZE>
+        {
             fn inter3_sse(
                 &self,
                 table: &[SseAlignedF32],
                 in_r: usize,
                 in_g: usize,
                 in_b: usize,
-                lut: &[BarycentricWeight<f32>],
+                lut: &[BarycentricWeight<f32>; BINS],
             ) -> SseVector {
                 unsafe {
                     self.interpolate(
@@ -244,14 +247,15 @@ define_inter_sse!(TrilinearSse);
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PyramidalSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate(
+    unsafe fn interpolate<const BINS: usize>(
         &self,
         in_r: usize,
         in_g: usize,
         in_b: usize,
-        lut: &[BarycentricWeight<f32>],
+        lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
+        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
         let lut_r = lut[in_r];
         let lut_g = lut[in_g];
         let lut_b = lut[in_b];
@@ -322,14 +326,15 @@ impl<const GRID_SIZE: usize> PyramidalSse<GRID_SIZE> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PrismaticSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate(
+    unsafe fn interpolate<const BINS: usize>(
         &self,
         in_r: usize,
         in_g: usize,
         in_b: usize,
-        lut: &[BarycentricWeight<f32>],
+        lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
+        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
         let lut_r = lut[in_r];
         let lut_g = lut[in_g];
         let lut_b = lut[in_b];
@@ -390,14 +395,15 @@ impl<const GRID_SIZE: usize> PrismaticSse<GRID_SIZE> {
 
 impl<const GRID_SIZE: usize> TrilinearSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate(
+    unsafe fn interpolate<const BINS: usize>(
         &self,
         in_r: usize,
         in_g: usize,
         in_b: usize,
-        lut: &[BarycentricWeight<f32>],
+        lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
+        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
         let lut_r = lut[in_r];
         let lut_g = lut[in_g];
         let lut_b = lut[in_b];
