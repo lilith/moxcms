@@ -1222,6 +1222,84 @@ mod tests {
     use crate::*;
     use rand::RngExt;
 
+    // Exercises `Lut4x3::transform` + `Hypercube::{tetra,pyramid,prism,
+    // quadlinear}_vec3` + the SIMD `TransformLut4To3{Sse,Avx,Neon}` paths
+    // that were previously at 0% region coverage — the 4-channel-to-3
+    // LUT pipeline has no RGB->RGB test vehicle in the existing suite
+    // because those profiles use matrix-shaper, not LUT. A CMYK->sRGB
+    // transform is the cheapest way in: us_swop_coated.icc has both
+    // lut_a_to_b_* and lut_b_to_a_* tables, which drives the LUT4to3
+    // dispatch for every InterpolationMethod and BarycentricWeightScale.
+    //
+    // `#[cfg(feature = "options")]` because the Tetrahedral / Pyramid /
+    // Prism match arms in the dispatch are gated behind that feature.
+    #[cfg(feature = "options")]
+    #[test]
+    fn test_cmyk_to_srgb_all_interpolation_methods() {
+        use std::collections::HashSet;
+        use std::fs;
+
+        let Ok(cmyk_bytes) = fs::read("./assets/us_swop_coated.icc") else {
+            eprintln!("skipped: assets/us_swop_coated.icc unavailable");
+            return;
+        };
+        let cmyk = ColorProfile::new_from_slice(&cmyk_bytes).unwrap();
+        let srgb = ColorProfile::new_srgb();
+
+        // Eight CMYK samples: one per cube corner plus two interior
+        // points. The unique-output assertion below only needs the
+        // transform to produce something non-constant; the numerical
+        // values aren't pinned (that's the job of cross-implementation
+        // regression tests against lcms, which live elsewhere).
+        let cmyk_in: [u8; 32] = [
+            0, 0, 0, 0, //
+            255, 0, 0, 0, //
+            0, 255, 0, 0, //
+            0, 0, 255, 0, //
+            0, 0, 0, 255, //
+            255, 255, 255, 0, //
+            128, 64, 32, 16, //
+            200, 50, 100, 25, //
+        ];
+        let mut rgb_out = [0u8; 24];
+
+        for method in [
+            InterpolationMethod::Tetrahedral,
+            InterpolationMethod::Pyramid,
+            InterpolationMethod::Prism,
+            InterpolationMethod::Linear,
+        ] {
+            for scale in [
+                BarycentricWeightScale::Low,
+                BarycentricWeightScale::High,
+            ] {
+                let opts = TransformOptions {
+                    interpolation_method: method,
+                    barycentric_weight_scale: scale,
+                    ..Default::default()
+                };
+                let transform = cmyk
+                    .create_transform_8bit(Layout::Rgba, &srgb, Layout::Rgb, opts)
+                    .unwrap_or_else(|e| {
+                        panic!("failed to build transform (method={method:?}, scale={scale:?}): {e:?}")
+                    });
+                transform.transform(&cmyk_in, &mut rgb_out).unwrap_or_else(|e| {
+                    panic!("transform failed (method={method:?}, scale={scale:?}): {e:?}")
+                });
+
+                // Sanity: the eight distinct CMYK inputs should not all
+                // collapse to the same RGB output. If they do, the
+                // interpolation dispatch is almost certainly returning a
+                // constant instead of reading the LUT.
+                let unique: HashSet<_> = rgb_out.chunks(3).collect();
+                assert!(
+                    unique.len() > 1,
+                    "method={method:?} scale={scale:?} produced constant output: {rgb_out:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_transform_rgb8() {
         let mut srgb_profile = ColorProfile::new_srgb();
