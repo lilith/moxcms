@@ -27,8 +27,9 @@
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #![cfg(feature = "avx_luts")]
-use crate::conversions::interpolator::{BarycentricWeight, assume_lut_bary_bounds};
+use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
 use crate::math::FusedMultiplyAdd;
+use num_traits::AsPrimitive;
 use std::arch::x86_64::*;
 use std::ops::{Add, Mul, Sub};
 
@@ -57,25 +58,25 @@ pub(crate) struct PyramidAvxFmaQ0_15Double<const GRID_SIZE: usize> {}
 #[cfg(feature = "options")]
 pub(crate) struct TetrahedralAvxQ0_15Double<const GRID_SIZE: usize> {}
 
-pub(crate) trait AvxMdInterpolationQ0_15Double<const BINS: usize> {
+pub(crate) trait AvxMdInterpolationQ0_15Double<const BINS: usize, U: AsPrimitive<usize>> {
     fn inter3_sse(
         &self,
         table0: &[AvxAlignedI16],
         table1: &[AvxAlignedI16],
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
     ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse);
 }
 
-pub(crate) trait AvxMdInterpolationQ0_15<const BINS: usize> {
+pub(crate) trait AvxMdInterpolationQ0_15<const BINS: usize, U: AsPrimitive<usize>> {
     fn inter3_sse(
         &self,
         table: &[AvxAlignedI16],
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
     ) -> AvxVectorQ0_15Sse;
 }
@@ -265,30 +266,15 @@ impl<const GRID_SIZE: usize> Fetcher<AvxVectorQ0_15Sse>
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> TetrahedralAvxQ0_15<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         r: impl Fetcher<AvxVectorQ0_15Sse>,
     ) -> AvxVectorQ0_15Sse {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let rx = lut_r.w;
-        let ry = lut_g.w;
-        let rz = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0 = r.fetch(x, y, z);
 
@@ -336,15 +322,15 @@ impl<const GRID_SIZE: usize> TetrahedralAvxQ0_15<GRID_SIZE> {
 
 macro_rules! define_interp_avx {
     ($interpolator: ident) => {
-        impl<const GRID_SIZE: usize, const BINS: usize> AvxMdInterpolationQ0_15<BINS>
-            for $interpolator<GRID_SIZE>
+        impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+            AvxMdInterpolationQ0_15<BINS, U> for $interpolator<GRID_SIZE>
         {
             fn inter3_sse(
                 &self,
                 table: &[AvxAlignedI16],
-                in_r: usize,
-                in_g: usize,
-                in_b: usize,
+                in_r: U,
+                in_g: U,
+                in_b: U,
                 lut: &[BarycentricWeight<i16>; BINS],
             ) -> AvxVectorQ0_15Sse {
                 unsafe {
@@ -364,16 +350,16 @@ macro_rules! define_interp_avx {
 #[cfg(feature = "options")]
 macro_rules! define_interp_avx_d {
     ($interpolator: ident) => {
-        impl<const GRID_SIZE: usize, const BINS: usize> AvxMdInterpolationQ0_15Double<BINS>
-            for $interpolator<GRID_SIZE>
+        impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+            AvxMdInterpolationQ0_15Double<BINS, U> for $interpolator<GRID_SIZE>
         {
             fn inter3_sse(
                 &self,
                 table0: &[AvxAlignedI16],
                 table1: &[AvxAlignedI16],
-                in_r: usize,
-                in_g: usize,
-                in_b: usize,
+                in_r: U,
+                in_g: U,
+                in_b: U,
                 lut: &[BarycentricWeight<i16>; BINS],
             ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse) {
                 unsafe {
@@ -404,16 +390,16 @@ define_interp_avx_d!(PrismaticAvxQ0_15Double);
 define_interp_avx_d!(PyramidAvxFmaQ0_15Double);
 
 #[cfg(feature = "options")]
-impl<const GRID_SIZE: usize, const BINS: usize> AvxMdInterpolationQ0_15Double<BINS>
-    for TetrahedralAvxQ0_15Double<GRID_SIZE>
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    AvxMdInterpolationQ0_15Double<BINS, U> for TetrahedralAvxQ0_15Double<GRID_SIZE>
 {
     fn inter3_sse(
         &self,
         table0: &[AvxAlignedI16],
         table1: &[AvxAlignedI16],
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
     ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse) {
         unsafe {
@@ -431,16 +417,16 @@ impl<const GRID_SIZE: usize, const BINS: usize> AvxMdInterpolationQ0_15Double<BI
     }
 }
 
-impl<const GRID_SIZE: usize, const BINS: usize> AvxMdInterpolationQ0_15Double<BINS>
-    for TrilinearAvxQ0_15Double<GRID_SIZE>
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    AvxMdInterpolationQ0_15Double<BINS, U> for TrilinearAvxQ0_15Double<GRID_SIZE>
 {
     fn inter3_sse(
         &self,
         table0: &[AvxAlignedI16],
         table1: &[AvxAlignedI16],
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
     ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse) {
         unsafe {
@@ -461,30 +447,15 @@ impl<const GRID_SIZE: usize, const BINS: usize> AvxMdInterpolationQ0_15Double<BI
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PyramidalAvxQ0_15<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         r: impl Fetcher<AvxVectorQ0_15Sse>,
     ) -> AvxVectorQ0_15Sse {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0 = r.fetch(x, y, z);
 
@@ -549,30 +520,15 @@ impl<const GRID_SIZE: usize> PyramidalAvxQ0_15<GRID_SIZE> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PrismaticAvxQ0_15<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         r: impl Fetcher<AvxVectorQ0_15Sse>,
     ) -> AvxVectorQ0_15Sse {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0 = r.fetch(x, y, z);
 
@@ -625,31 +581,16 @@ impl<const GRID_SIZE: usize> PrismaticAvxQ0_15<GRID_SIZE> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PrismaticAvxQ0_15Double<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         r0: impl Fetcher<AvxVectorQ0_15Sse>,
         r1: impl Fetcher<AvxVectorQ0_15Sse>,
     ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse) {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0_0 = r0.fetch(x, y, z);
         let c0_1 = r0.fetch(x, y, z);
@@ -729,31 +670,16 @@ impl<const GRID_SIZE: usize> PrismaticAvxQ0_15Double<GRID_SIZE> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PyramidAvxFmaQ0_15Double<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         r0: impl Fetcher<AvxVectorQ0_15Sse>,
         r1: impl Fetcher<AvxVectorQ0_15Sse>,
     ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse) {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0_0 = r0.fetch(x, y, z);
         let c0_1 = r1.fetch(x, y, z);
@@ -852,30 +778,15 @@ impl<const GRID_SIZE: usize> PyramidAvxFmaQ0_15Double<GRID_SIZE> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> TetrahedralAvxQ0_15Double<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         rv: impl Fetcher<AvxVectorQ0_15>,
     ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse) {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let rx = lut_r.w;
-        let ry = lut_g.w;
-        let rz = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0 = rv.fetch(x, y, z);
 
@@ -927,30 +838,15 @@ impl<const GRID_SIZE: usize> TetrahedralAvxQ0_15Double<GRID_SIZE> {
 
 impl<const GRID_SIZE: usize> TrilinearAvxQ0_15Double<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         rv: impl Fetcher<AvxVectorQ0_15>,
     ) -> (AvxVectorQ0_15Sse, AvxVectorQ0_15Sse) {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let rx = lut_r.w;
-        let ry = lut_g.w;
-        let rz = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
 
         const Q_MAX: i16 = ((1i32 << 15i32) - 1) as i16;
 
@@ -985,30 +881,15 @@ impl<const GRID_SIZE: usize> TrilinearAvxQ0_15Double<GRID_SIZE> {
 
 impl<const GRID_SIZE: usize> TrilinearAvxQ0_15<GRID_SIZE> {
     #[target_feature(enable = "avx2")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<i16>; BINS],
         r: impl Fetcher<AvxVectorQ0_15Sse>,
     ) -> AvxVectorQ0_15Sse {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         const Q_MAX: i16 = ((1i32 << 15i32) - 1) as i16;
 

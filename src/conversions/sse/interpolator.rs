@@ -27,8 +27,9 @@
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #![cfg(feature = "sse_luts")]
-use crate::conversions::interpolator::{BarycentricWeight, assume_lut_bary_bounds};
+use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
 use crate::math::FusedMultiplyAdd;
+use num_traits::AsPrimitive;
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
@@ -126,13 +127,13 @@ impl<const GRID_SIZE: usize> Fetcher<SseVector> for TetrahedralSseFetchVector<'_
     }
 }
 
-pub(crate) trait SseMdInterpolation<const BINS: usize> {
+pub(crate) trait SseMdInterpolation<const BINS: usize, U: AsPrimitive<usize>> {
     fn inter3_sse(
         &self,
         table: &[SseAlignedF32],
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<f32>; BINS],
     ) -> SseVector;
 }
@@ -140,30 +141,15 @@ pub(crate) trait SseMdInterpolation<const BINS: usize> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> TetrahedralSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let rx = lut_r.w;
-        let ry = lut_g.w;
-        let rz = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0 = r.fetch(x, y, z);
 
@@ -211,15 +197,15 @@ impl<const GRID_SIZE: usize> TetrahedralSse<GRID_SIZE> {
 
 macro_rules! define_inter_sse {
     ($interpolator: ident) => {
-        impl<const GRID_SIZE: usize, const BINS: usize> SseMdInterpolation<BINS>
-            for $interpolator<GRID_SIZE>
+        impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+            SseMdInterpolation<BINS, U> for $interpolator<GRID_SIZE>
         {
             fn inter3_sse(
                 &self,
                 table: &[SseAlignedF32],
-                in_r: usize,
-                in_g: usize,
-                in_b: usize,
+                in_r: U,
+                in_g: U,
+                in_b: U,
                 lut: &[BarycentricWeight<f32>; BINS],
             ) -> SseVector {
                 unsafe {
@@ -247,30 +233,15 @@ define_inter_sse!(TrilinearSse);
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PyramidalSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0 = r.fetch(x, y, z);
 
@@ -326,30 +297,15 @@ impl<const GRID_SIZE: usize> PyramidalSse<GRID_SIZE> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PrismaticSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let c0 = r.fetch(x, y, z);
 
@@ -395,30 +351,15 @@ impl<const GRID_SIZE: usize> PrismaticSse<GRID_SIZE> {
 
 impl<const GRID_SIZE: usize> TrilinearSse<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<const BINS: usize>(
+    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
-        in_r: usize,
-        in_g: usize,
-        in_b: usize,
+        in_r: U,
+        in_g: U,
+        in_b: U,
         lut: &[BarycentricWeight<f32>; BINS],
         r: impl Fetcher<SseVector>,
     ) -> SseVector {
-        assume_lut_bary_bounds!(in_r, in_g, in_b, BINS);
-        let lut_r = lut[in_r];
-        let lut_g = lut[in_g];
-        let lut_b = lut[in_b];
-
-        let x: i32 = lut_r.x;
-        let y: i32 = lut_g.x;
-        let z: i32 = lut_b.x;
-
-        let x_n: i32 = lut_r.x_n;
-        let y_n: i32 = lut_g.x_n;
-        let z_n: i32 = lut_b.x_n;
-
-        let dr = lut_r.w;
-        let dg = lut_g.w;
-        let db = lut_b.w;
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
         let w0 = SseVector::from(dr);
         let w1 = SseVector::from(dg);
