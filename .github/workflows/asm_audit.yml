@@ -139,8 +139,13 @@ jobs:
             src/conversions/interpolator.rs \
             src/nd_array.rs \
           ; do
+            # cargo-llvm-cov emits rows relative to src/ root, e.g.
+            # `trc.rs`, `conversions/lut4.rs`. Exact-match the first
+            # column to avoid false positives (e.g. `trc.rs` substring-
+            # matching `srlab2.rs`).
+            relpath="${f#src/}"
             pct=$(printf '%s\n' "$report" \
-                    | awk -v p="$f" '$0 ~ p { print $4; exit }' \
+                    | awk -v p="$relpath" '$1 == p { print $4; exit }' \
                     | tr -d '%')
             if [ -z "$pct" ] || [ "${pct%.*}" = 0 ]; then
               echo "::warning file=$f::$f has 0% region coverage — asm/unsafe baselines here are for untested code paths; add tests to make the audit load-bearing"
