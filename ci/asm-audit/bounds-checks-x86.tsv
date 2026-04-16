@@ -1,6 +1,6 @@
-12	<moxcms::conversions::lut3x3::Lut3x3 as moxcms::transform::Stage>::transform
-14	<moxcms::conversions::lut3x4::Lut3x4 as moxcms::transform::Stage>::transform
-23	<moxcms::conversions::lut4::Lut4x3 as moxcms::transform::Stage>::transform
+3	<moxcms::conversions::lut3x3::Lut3x3 as moxcms::transform::Stage>::transform
+4	<moxcms::conversions::lut3x4::Lut3x4 as moxcms::transform::Stage>::transform
+13	<moxcms::conversions::lut4::Lut4x3 as moxcms::transform::Stage>::transform
 1	moxcms::conversions::prelude_lut_xyz_rgb::create_rgb_lin_lut
 1	moxcms::reader::<impl moxcms::profile::ColorProfile>::read_trc_tag
 2	moxcms::trc::<impl moxcms::profile::ColorProfile>::build_8bit_gamma_table

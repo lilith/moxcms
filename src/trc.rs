@@ -419,28 +419,42 @@ fn linear_forward_table<T: PointeeSizeExpressible, const N: usize, const BIT_DEP
 
 #[inline(always)]
 pub(crate) fn lut_interp_linear_float(x: f32, table: &[f32]) -> f32 {
-    let value = x.min(1.).max(0.) * (table.len() - 1) as f32;
+    // Short-circuit empty tables up front — gives LLVM a single early
+    // return so the rest of the function can treat `last` as a valid
+    // index and drop every `table[...]` bounds check.
+    let Some(last_idx) = table.len().checked_sub(1) else {
+        return 0.0;
+    };
+    let last = last_idx as i32;
+    let value = x.min(1.).max(0.) * last as f32;
 
-    let upper: i32 = value.ceil() as i32;
-    let lower: i32 = value.floor() as i32;
+    // `.max(0).min(last)` doesn't carry the internal `assert!(min <= max)`
+    // that `i32::clamp` does, so there's no assert-panic path to inline
+    // into callers. Lowers to two `cmov`/`csel` per cast.
+    let upper = (value.ceil() as i32).max(0).min(last) as usize;
+    let lower = (value.floor() as i32).max(0).min(last) as usize;
 
     let diff = upper as f32 - value;
-    let tu = table[upper as usize];
-    mlaf(neg_mlaf(tu, tu, diff), table[lower as usize], diff)
+    let tu = table[upper];
+    mlaf(neg_mlaf(tu, tu, diff), table[lower], diff)
 }
 
 /// Lut interpolation float where values is already clamped
 #[inline(always)]
 #[allow(dead_code)]
 pub(crate) fn lut_interp_linear_float_clamped(x: f32, table: &[f32]) -> f32 {
-    let value = x * (table.len() - 1) as f32;
+    let Some(last_idx) = table.len().checked_sub(1) else {
+        return 0.0;
+    };
+    let last = last_idx as i32;
+    let value = x * last as f32;
 
-    let upper: i32 = value.ceil() as i32;
-    let lower: i32 = value.floor() as i32;
+    let upper = (value.ceil() as i32).max(0).min(last) as usize;
+    let lower = (value.floor() as i32).max(0).min(last) as usize;
 
     let diff = upper as f32 - value;
-    let tu = table[upper as usize];
-    mlaf(neg_mlaf(tu, tu, diff), table[lower as usize], diff)
+    let tu = table[upper];
+    mlaf(neg_mlaf(tu, tu, diff), table[lower], diff)
 }
 
 #[inline]
