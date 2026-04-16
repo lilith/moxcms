@@ -16,7 +16,7 @@ concurrency:
 on:
   push:
     branches:
-      - 'safe-bary-indexing'
+      - 'safe-bary-*'
       - 'asm-audit-*'
   pull_request:
     branches:
