@@ -109,7 +109,7 @@ jobs:
           cargo llvm-cov --all-features --lcov --output-path lcov.info
           echo
           echo "::group::per-file coverage summary (all features)"
-          cargo llvm-cov report --all-features
+          cargo llvm-cov report
           echo "::endgroup::"
 
       - name: Upload lcov.info
@@ -129,7 +129,7 @@ jobs:
         # that exercise those paths to make the audit load-bearing.
         run: |
           set -eu
-          report=$(cargo llvm-cov report --all-features 2>&1)
+          report=$(cargo llvm-cov report 2>&1)
           uncovered=0
           for f in \
             src/trc.rs \
