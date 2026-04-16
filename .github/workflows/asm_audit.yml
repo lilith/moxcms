@@ -79,3 +79,74 @@ jobs:
           name: unsafe-audit
           path: target/unsafe-audit
           if-no-files-found: ignore
+
+  coverage:
+    name: coverage
+    # Coverage makes the asm + unsafe audits meaningful. A file can have
+    # zero `panic_bounds_check` in its compiled asm simply because the
+    # test suite never exercises it. The coverage job runs the full test
+    # matrix under `cargo-llvm-cov`, emits an lcov report, and prints a
+    # per-file summary — the `trc::lut_interp_tests` and the various
+    # `Lut4x3` / transform paths the audit pins should show non-zero
+    # coverage here. A coverage floor can be introduced later once the
+    # organic numbers settle.
+    if: github.repository == 'lilith/moxcms'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Run tests under coverage (all features)
+        run: |
+          cargo llvm-cov --all-features --lcov --output-path lcov.info
+          echo
+          echo "::group::per-file coverage summary (all features)"
+          cargo llvm-cov report --all-features
+          echo "::endgroup::"
+
+      - name: Upload lcov.info
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: error
+
+      - name: Spot-check audited paths
+        # The asm and unsafe audits pin baselines for specific files. If
+        # any of those files is 0%-covered by the test suite, the baseline
+        # is guarding codegen for code that never runs — a regression
+        # there wouldn't be caught by `cargo test`. Surface this as a
+        # warning so it's visible in PR CI without blocking; add tests
+        # that exercise those paths to make the audit load-bearing.
+        run: |
+          set -eu
+          report=$(cargo llvm-cov report --all-features 2>&1)
+          uncovered=0
+          for f in \
+            src/trc.rs \
+            src/conversions/lut4.rs \
+            src/conversions/lut3x3.rs \
+            src/conversions/lut3x4.rs \
+            src/conversions/interpolator.rs \
+            src/nd_array.rs \
+          ; do
+            pct=$(printf '%s\n' "$report" \
+                    | awk -v p="$f" '$0 ~ p { print $4; exit }' \
+                    | tr -d '%')
+            if [ -z "$pct" ] || [ "${pct%.*}" = 0 ]; then
+              echo "::warning file=$f::$f has 0% region coverage — asm/unsafe baselines here are for untested code paths; add tests to make the audit load-bearing"
+              uncovered=$((uncovered + 1))
+            else
+              echo "$f: $pct% region coverage"
+            fi
+          done
+          echo "spot-check: $uncovered audited file(s) lack coverage"

@@ -1600,3 +1600,105 @@ pub trait ToneCurveEvaluator {
     fn evaluate_tristimulus(&self, rgb: Rgb<f32>) -> Rgb<f32>;
     fn evaluate_value(&self, value: f32) -> f32;
 }
+
+#[cfg(test)]
+mod lut_interp_tests {
+    use super::{lut_interp_linear_float, lut_interp_linear_float_clamped};
+
+    // Regression pins: `lut_interp_linear_float{,_clamped}` are the core
+    // table-interpolation helpers used by `Lut4x3::transform_impl` and the
+    // shaper TRC evaluators. Post-`9215489` these functions were refactored
+    // (empty-table short-circuit, integer clamp instead of raw cast) to let
+    // LLVM drop their `panic_bounds_check` sites. These tests pin the
+    // numeric behavior across that refactor.
+    //
+    // Shape is linear interpolation over a uniformly-sampled LUT: for a
+    // table `t` of length `n`, the sample at `x ∈ [0, 1]` lies at
+    // `value = x * (n - 1)`; result mixes `t[floor(value)]` and
+    // `t[ceil(value)]` by the fractional part.
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "expected {expected}, got {actual}"
+        );
+    }
+
+    // Small identity-ish tables where the expected value is derivable by
+    // hand — any arithmetic drift in the refactor would shift these.
+    const T3: [f32; 3] = [0.0, 0.5, 1.0];
+
+    #[test]
+    fn lut_interp_linear_float_endpoints_and_midpoints() {
+        assert_close(lut_interp_linear_float(0.0, &T3), 0.0);
+        assert_close(lut_interp_linear_float(0.25, &T3), 0.25);
+        assert_close(lut_interp_linear_float(0.5, &T3), 0.5);
+        assert_close(lut_interp_linear_float(0.75, &T3), 0.75);
+        assert_close(lut_interp_linear_float(1.0, &T3), 1.0);
+    }
+
+    #[test]
+    fn lut_interp_linear_float_clamps_out_of_range() {
+        // Inputs outside [0, 1] are internally clamped before interpolation.
+        assert_close(lut_interp_linear_float(-1.0, &T3), 0.0);
+        assert_close(lut_interp_linear_float(2.0, &T3), 1.0);
+        assert_close(lut_interp_linear_float(f32::NEG_INFINITY, &T3), 0.0);
+        assert_close(lut_interp_linear_float(f32::INFINITY, &T3), 1.0);
+    }
+
+    #[test]
+    fn lut_interp_linear_float_empty_table_returns_zero() {
+        // The `checked_sub(1)` short-circuit path. No panic, no OOB.
+        assert_close(lut_interp_linear_float(0.5, &[]), 0.0);
+        assert_close(lut_interp_linear_float(-1.0, &[]), 0.0);
+        assert_close(lut_interp_linear_float(2.0, &[]), 0.0);
+    }
+
+    #[test]
+    fn lut_interp_linear_float_single_element_table() {
+        // last = 0; all indices collapse to 0; result is always t[0].
+        assert_close(lut_interp_linear_float(0.0, &[0.42]), 0.42);
+        assert_close(lut_interp_linear_float(0.5, &[0.42]), 0.42);
+        assert_close(lut_interp_linear_float(1.0, &[0.42]), 0.42);
+    }
+
+    #[test]
+    fn lut_interp_linear_float_non_monotonic_table() {
+        // Interpolation math doesn't assume sorted input — verify it still
+        // reproduces the table's exact values at each sample point.
+        let t = [0.5, 0.1, 0.9, 0.3];
+        assert_close(lut_interp_linear_float(0.0 / 3.0, &t), 0.5);
+        assert_close(lut_interp_linear_float(1.0 / 3.0, &t), 0.1);
+        assert_close(lut_interp_linear_float(2.0 / 3.0, &t), 0.9);
+        assert_close(lut_interp_linear_float(3.0 / 3.0, &t), 0.3);
+        // Mid-segment interpolation between t[0]=0.5 and t[1]=0.1 at
+        // fraction 0.5 = mean = 0.3.
+        assert_close(lut_interp_linear_float(0.5 / 3.0, &t), 0.3);
+    }
+
+    #[test]
+    fn lut_interp_linear_float_large_table() {
+        // 33-sample sRGB-ish ramp, verifies the non-trivial-length path.
+        let t: Vec<f32> = (0..33).map(|i| i as f32 / 32.0).collect();
+        for i in 0..33 {
+            let x = i as f32 / 32.0;
+            assert_close(lut_interp_linear_float(x, &t), x);
+        }
+    }
+
+    #[test]
+    fn lut_interp_linear_float_clamped_matches_when_in_range() {
+        // The _clamped variant skips the input `x.min.max`; for in-range
+        // inputs both functions agree bit-exactly.
+        for x in [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
+            let a = lut_interp_linear_float(x, &T3);
+            let b = lut_interp_linear_float_clamped(x, &T3);
+            assert_close(a, b);
+        }
+    }
+
+    #[test]
+    fn lut_interp_linear_float_clamped_empty_table_returns_zero() {
+        assert_close(lut_interp_linear_float_clamped(0.5, &[]), 0.0);
+    }
+}
