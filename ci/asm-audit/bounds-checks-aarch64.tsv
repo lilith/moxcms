@@ -1,0 +1,19 @@
+12	<moxcms::conversions::lut3x3::Lut3x3 as moxcms::transform::Stage>::transform
+14	<moxcms::conversions::lut3x4::Lut3x4 as moxcms::transform::Stage>::transform
+54	<moxcms::conversions::lut4::Lut4x3 as moxcms::transform::Stage>::transform
+1	moxcms::conversions::prelude_lut_xyz_rgb::create_rgb_lin_lut
+1	moxcms::reader::<impl moxcms::profile::ColorProfile>::read_trc_tag
+2	moxcms::trc::<impl moxcms::profile::ColorProfile>::build_8bit_gamma_table
+10	moxcms::trc::<impl moxcms::profile::ColorProfile>::build_gamma_table
+1	moxcms::trc::<impl moxcms::profile::ColorProfile>::is_linear_matrix_shaper
+1	moxcms::trc::invert_lut
+1	moxcms::trc::invert_lut_boxed
+1	moxcms::trc::linear_curve_parametric_s
+7	moxcms::trc::make_gamma_lut
+1	moxcms::trc::ParametricCurve::new
+6	<moxcms::trc::ToneCurveLutEvaluator as moxcms::trc::ToneCurveEvaluator>::evaluate_tristimulus
+2	<moxcms::trc::ToneCurveLutEvaluator as moxcms::trc::ToneCurveEvaluator>::evaluate_value
+12	moxcms::trc::ToneReprCurve::build_linearize_table
+1	moxcms::trc::ToneReprCurve::inverse
+1	moxcms::trc::ToneReprCurve::make_gamma_evaluator
+1	moxcms::trc::ToneReprCurve::make_linear_evaluator

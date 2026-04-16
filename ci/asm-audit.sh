@@ -155,26 +155,63 @@ done < "$LIST"
 echo "---"
 echo "asm-audit: $covered / $total questioned types had symbols emitted"
 
-# Whole-file backstop. The per-type check above can only catch bounds
-# checks that stay inside a symbol whose demangled name contains the
-# questioned type path. A bounds check inlined into a *caller* symbol
-# (e.g. `<Lut4x3 as Stage>::transform`) would slip past the per-type
-# grep. Pinning a whole-file total as the ceiling catches any such
-# leak no matter where it lands.
-BASELINE_FILE="$REPO_ROOT/ci/asm-audit/max-bounds-checks-$SCENARIO.txt"
-baseline=$(tr -dc '0-9' < "$BASELINE_FILE")
-actual=$(grep -c 'panic_bounds_check' "$FULL" || true)
+# Whole-crate per-symbol baseline. Widens the audit beyond the per-type
+# check above so every symbol in the crate — including the
+# transform-chunk / TRC helpers an inlined interpolate might spill into —
+# has a pinned ceiling.
+#
+# Baseline file format (TSV, sorted by symbol):
+#   <count>\t<demangled symbol>
+#
+# Pass rule: every symbol's *current* `panic_bounds_check` count must be
+# `<=` its baseline entry. A symbol that has ANY bounds checks today but
+# isn't in the baseline is a regression.
+BASELINE_FILE="$REPO_ROOT/ci/asm-audit/bounds-checks-$SCENARIO.tsv"
+[ -f "$BASELINE_FILE" ] || die "missing $BASELINE_FILE"
 
-printf 'asm-audit: total panic_bounds_check across full.s: %s (baseline: %s, delta: %+d)\n' \
-  "$actual" "$baseline" "$((actual - baseline))"
+CURRENT_TSV="$OUTDIR/current-bounds-checks.tsv"
+awk '/^[a-zA-Z_<].*:$/{sym=$0;sub(/:$/,"",sym);next} /panic_bounds_check/{print sym}' "$FULL" \
+  | sort | uniq -c \
+  | awk '{count=$1; $1=""; sub(/^ +/,""); printf "%s\t%s\n", count, $0}' \
+  > "$CURRENT_TSV"
+
+REGRESSIONS="$OUTDIR/bounds-checks-regressions.tsv"
+: > "$REGRESSIONS"
+
+# Ingest baseline into an associative array (by symbol).
+declare -A BASELINE_MAP
+while IFS=$'\t' read -r count sym; do
+  [ -z "${sym:-}" ] && continue
+  case "$count" in \#*) continue ;; esac
+  BASELINE_MAP[$sym]=$count
+done < "$BASELINE_FILE"
+
+total_actual=0
+total_baseline=$(awk -F'\t' 'NR{ s += $1 } END { print s + 0 }' "$BASELINE_FILE")
+regressions=0
+
+# Compare current against baseline.
+while IFS=$'\t' read -r count sym; do
+  [ -z "${sym:-}" ] && continue
+  total_actual=$((total_actual + count))
+  base=${BASELINE_MAP[$sym]:-0}
+  if [ "$count" -gt "$base" ]; then
+    printf '%s\t%s\t%s\n' "$count" "$base" "$sym" >> "$REGRESSIONS"
+    regressions=$((regressions + 1))
+  fi
+done < "$CURRENT_TSV"
+
+printf 'asm-audit: whole-crate panic_bounds_check total: %s (baseline sum: %s, delta: %+d)\n' \
+  "$total_actual" "$total_baseline" "$((total_actual - total_baseline))"
 
 total_fail=0
-if [ "$actual" -gt "$baseline" ]; then
-  echo "asm-audit: FAIL — whole-file bounds-check count exceeds baseline."
-  echo "          Inspect the new call sites:"
-  awk '/^[A-Za-z_<].*:$/ { sym=$0; next } /panic_bounds_check/ { print sym }' \
-    "$FULL" | sort | uniq -c | sort -rn | head -20 | sed 's/^/          /'
-  echo "          If the new checks are intentional, update"
+if [ "$regressions" -gt 0 ]; then
+  echo "asm-audit: FAIL — $regressions symbol(s) exceed per-symbol baseline:"
+  printf '          %4s %4s  %s\n' now base symbol
+  while IFS=$'\t' read -r count base sym; do
+    printf '          %4s %4s  %s\n' "$count" "$base" "$sym"
+  done < "$REGRESSIONS"
+  echo "          To accept the new counts intentionally, edit"
   echo "          $BASELINE_FILE."
   total_fail=1
 fi

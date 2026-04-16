@@ -1,13 +1,18 @@
-name: ASM audit (PR #168)
+name: ASM + unsafe audits
 
-# Holds the claim in PR #168's description: after replacing `get_unchecked`
-# with `[]` indexing on barycentric weight LUT lookups, every questioned
-# interpolator emits zero `panic_bounds_check` calls across all
-# monomorphizations. The audit runs cargo-show-asm per scenario and slices
-# the output per type.
+# Two gates that catch regressions in codegen quality and `unsafe` usage:
 #
-# This workflow lives in the fork (lilith/moxcms); the `if:` guard keeps
-# it from running if the PR is merged upstream to awxkee/moxcms.
+#   * `ci/asm-audit.sh <scenario>` builds the crate with `--features options`
+#     and asserts every questioned interpolator type emits zero
+#     `panic_bounds_check`, plus a whole-crate per-symbol baseline so a
+#     regression inlined into a caller can't slip past the per-type grep.
+#
+#   * `ci/unsafe-audit.sh` counts `unsafe` tokens per `.rs` file under
+#     `src/` against a pinned per-file baseline. Monotonic reduction only;
+#     an intentional rise requires bumping the baseline in the PR.
+#
+# Lives in the fork (lilith/moxcms) — the `if:` guard stops it from firing
+# upstream if the workflow file ever lands on awxkee/moxcms.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -56,3 +61,21 @@ jobs:
           name: asm-audit-${{ matrix.scenario }}
           path: target/asm-audit/${{ matrix.scenario }}
           if-no-files-found: error
+
+  unsafe-audit:
+    name: unsafe-audit
+    if: github.repository == 'lilith/moxcms'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run unsafe audit
+        run: ci/unsafe-audit.sh
+
+      - name: Upload unsafe audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsafe-audit
+          path: target/unsafe-audit
+          if-no-files-found: ignore
