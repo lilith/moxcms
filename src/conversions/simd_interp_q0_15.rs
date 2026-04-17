@@ -327,9 +327,10 @@ pub mod __asm_audit {
         cube: &[Aligned4I16],
         out: &mut [i16; 8],
     ) {
-        archmage::incant!(interpolate_tetra::<u8, 33, 256>(
-            in_r, in_g, in_b, lut, cube, out,
-        ));
+        archmage::incant!(
+            interpolate_tetra::<u8, 33, 256>(in_r, in_g, in_b, lut, cube, out,),
+            [v3, neon, wasm128, scalar]
+        );
     }
 
     #[inline(never)]
@@ -341,9 +342,10 @@ pub mod __asm_audit {
         cube: &[Aligned4I16],
         out: &mut [i16; 8],
     ) {
-        archmage::incant!(interpolate_trilinear::<u8, 33, 256>(
-            in_r, in_g, in_b, lut, cube, out,
-        ));
+        archmage::incant!(
+            interpolate_trilinear::<u8, 33, 256>(in_r, in_g, in_b, lut, cube, out,),
+            [v3, neon, wasm128, scalar]
+        );
     }
 
     #[cfg(feature = "options")]
@@ -356,9 +358,10 @@ pub mod __asm_audit {
         cube: &[Aligned4I16],
         out: &mut [i16; 8],
     ) {
-        archmage::incant!(interpolate_pyramid::<u8, 33, 256>(
-            in_r, in_g, in_b, lut, cube, out,
-        ));
+        archmage::incant!(
+            interpolate_pyramid::<u8, 33, 256>(in_r, in_g, in_b, lut, cube, out,),
+            [v3, neon, wasm128, scalar]
+        );
     }
 
     #[cfg(feature = "options")]
@@ -371,9 +374,10 @@ pub mod __asm_audit {
         cube: &[Aligned4I16],
         out: &mut [i16; 8],
     ) {
-        archmage::incant!(interpolate_prism::<u8, 33, 256>(
-            in_r, in_g, in_b, lut, cube, out,
-        ));
+        archmage::incant!(
+            interpolate_prism::<u8, 33, 256>(in_r, in_g, in_b, lut, cube, out,),
+            [v3, neon, wasm128, scalar]
+        );
     }
 }
 
@@ -412,9 +416,12 @@ mod tests {
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
         let mut out = [0i16; 8];
-        incant!(interpolate_tetra::<u8, GRID_SIZE, BINS>(
-            128u8, 64u8, 200u8, &*weights, &cube, &mut out,
-        ));
+        incant!(
+            interpolate_tetra::<u8, GRID_SIZE, BINS>(
+                128u8, 64u8, 200u8, &*weights, &cube, &mut out,
+            ),
+            [v3, neon, wasm128, scalar]
+        );
     }
 
     #[test]
@@ -424,9 +431,12 @@ mod tests {
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
         let mut out = [0i16; 8];
-        incant!(interpolate_trilinear::<u8, GRID_SIZE, BINS>(
-            30u8, 90u8, 150u8, &*weights, &cube, &mut out,
-        ));
+        incant!(
+            interpolate_trilinear::<u8, GRID_SIZE, BINS>(
+                30u8, 90u8, 150u8, &*weights, &cube, &mut out,
+            ),
+            [v3, neon, wasm128, scalar]
+        );
     }
 
     #[cfg(feature = "options")]
@@ -437,9 +447,12 @@ mod tests {
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
         let mut out = [0i16; 8];
-        incant!(interpolate_pyramid::<u8, GRID_SIZE, BINS>(
-            50u8, 100u8, 150u8, &*weights, &cube, &mut out,
-        ));
+        incant!(
+            interpolate_pyramid::<u8, GRID_SIZE, BINS>(
+                50u8, 100u8, 150u8, &*weights, &cube, &mut out,
+            ),
+            [v3, neon, wasm128, scalar]
+        );
     }
 
     #[cfg(feature = "options")]
@@ -450,8 +463,9 @@ mod tests {
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
         let mut out = [0i16; 8];
-        incant!(interpolate_prism::<u8, GRID_SIZE, BINS>(
-            25u8, 75u8, 175u8, &*weights, &cube, &mut out,
-        ));
+        incant!(
+            interpolate_prism::<u8, GRID_SIZE, BINS>(25u8, 75u8, 175u8, &*weights, &cube, &mut out,),
+            [v3, neon, wasm128, scalar]
+        );
     }
 }

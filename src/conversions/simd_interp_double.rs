@@ -1,59 +1,57 @@
-// Generic SIMD interpolators built on magetypes, fanned out per tier
-// by `#[magetypes]` and fanned back in by `incant!` at the dispatch
-// site. Each of the four interpolators (Tetrahedral, Pyramidal,
-// Prismatic, Trilinear) is written exactly once here against the
-// generic `GenericF32x4<T>` type; the macro generates `_v3`, `_neon`,
-// `_wasm128`, `_scalar` suffixed specializations.
+// 256-bit Double-variant SIMD interpolators on magetypes `f32x8` —
+// same structure as `simd_interp.rs` but over 8-lane cube entries.
+// On NEON `GenericF32x8<NeonToken>` auto-polyfills to a pair of
+// `float32x4_t` (see magetypes `src/simd/impls/arm_neon.rs:205`), so
+// one generic body covers AVX2, NEON, WASM128, and scalar with no
+// separate NEON-Double type needed.
 //
-// Compared with the hand-written `SseVector` / `AvxVector` /
-// `NeonVector` wrappers each of which gated ~12 intrinsic calls
-// behind raw-pointer loads, this module contains no raw pointers and
-// is composed entirely of safe operators on `GenericF32x4<Token>`.
+// The "Double" variant packs two adjacent 4-channel cube entries into
+// a single 8-lane load and interpolates two output pixels in a single
+// pass. The caller splits the 8-wide result into two 4-wide halves.
 //
-// Scope: f32 (floating-point) tetrahedral/pyramidal/prismatic/trilinear
-// over a 4-lane LUT entry. The Q0_15 (i16) variants and the 256-bit
-// Double variants are not yet ported.
+// Scope: f32 path only. Q0.15 `i16x16` Double is a TODO (uses the same
+// shape — `GenericI16x16<Token>` — with a scalar `q15_mulhrs` helper).
 #![cfg(feature = "lut")]
 #![allow(dead_code)]
 #![allow(non_camel_case_types)]
+#![allow(unreachable_pub)]
 
 use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
 use archmage::magetypes;
-use magetypes::simd::generic::f32x4 as GenericF32x4;
+use magetypes::simd::generic::f32x8 as GenericF32x8;
 use num_traits::AsPrimitive;
 
-/// 4-lane aligned LUT storage. `#[repr(align(16), C)]` keeps `movaps`
-/// alignment on x86 and 16-byte alignment on NEON/wasm128 — same
-/// contract the hand-written `SseAlignedF32` / `NeonAlignedF32` kept.
-#[repr(align(16), C)]
-pub(crate) struct Aligned4<T>(pub(crate) [T; 4]);
+/// 8-lane aligned cube entry: two consecutive 4-channel packings.
+/// `#[repr(align(32), C)]` matches the `movaps`-grade alignment the
+/// hand-written `AvxAlignedF32x2` kept.
+#[repr(align(32), C)]
+pub(crate) struct Aligned8<T>(pub(crate) [T; 8]);
 
 // --- Tetrahedral ---------------------------------------------------------
 
-/// Branch interpolation: six-simplex decomposition of the unit cube,
-/// picks one tetrahedron based on the `(dr, dg, db)` ordering and
-/// folds three edge differences via `mul_add`. The body reads identical
-/// to the hand-written `TetrahedralSse::interpolate` — only the types
-/// differ.
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_tetra<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_tetra_double<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
-    out: &mut [f32; 4],
+    cube: &[Aligned8<f32>],
+    out: &mut [f32; 8],
 ) {
-    type f32x4 = GenericF32x4<Token>;
+    type f32x8 = GenericF32x8<Token>;
 
     let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
 
-    let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
+    let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
             + z as u32) as usize;
-        f32x4::load(token, &cube[offset].0)
+        f32x8::load(token, &cube[offset].0)
     };
 
     let c0 = fetch(x, y, z);
@@ -98,10 +96,9 @@ fn interpolate_tetra<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: 
         )
     };
 
-    // moxcms `a.mla(b, c) = a + b*c`.  magetypes `b.mul_add(c, a) = b*c + a`.
-    let rxv = f32x4::splat(token, rx);
-    let ryv = f32x4::splat(token, ry);
-    let rzv = f32x4::splat(token, rz);
+    let rxv = f32x8::splat(token, rx);
+    let ryv = f32x8::splat(token, ry);
+    let rzv = f32x8::splat(token, rz);
     let s0 = c1.mul_add(rxv, c0);
     let s1 = c2.mul_add(ryv, s0);
     c3.mul_add(rzv, s1).store(out);
@@ -109,28 +106,29 @@ fn interpolate_tetra<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: 
 
 // --- Trilinear ----------------------------------------------------------
 
-/// Eight-corner barycentric trilinear interpolation. No branching on
-/// the weight order — always fetches the eight cube corners and weights
-/// by `(1-dr, dr) × (1-dg, dg) × (1-db, db)`.
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_trilinear<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_trilinear_double<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
-    out: &mut [f32; 4],
+    cube: &[Aligned8<f32>],
+    out: &mut [f32; 8],
 ) {
-    type f32x4 = GenericF32x4<Token>;
+    type f32x8 = GenericF32x8<Token>;
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
-    let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
+    let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
             + z as u32) as usize;
-        f32x4::load(token, &cube[offset].0)
+        f32x8::load(token, &cube[offset].0)
     };
 
     let c000 = fetch(x, y, z);
@@ -142,24 +140,21 @@ fn interpolate_trilinear<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BI
     let c011 = fetch(x, y_n, z_n);
     let c111 = fetch(x_n, y_n, z_n);
 
-    let dx_v = f32x4::splat(token, 1.0 - dr);
-    let dr_v = f32x4::splat(token, dr);
-    let dy_v = f32x4::splat(token, 1.0 - dg);
-    let dg_v = f32x4::splat(token, dg);
-    let dz_v = f32x4::splat(token, 1.0 - db);
-    let db_v = f32x4::splat(token, db);
+    let dx_v = f32x8::splat(token, 1.0 - dr);
+    let dr_v = f32x8::splat(token, dr);
+    let dy_v = f32x8::splat(token, 1.0 - dg);
+    let dg_v = f32x8::splat(token, dg);
+    let dz_v = f32x8::splat(token, 1.0 - db);
+    let db_v = f32x8::splat(token, db);
 
-    // c00 = c000*(1-dr) + c100*dr
     let c00 = c100.mul_add(dr_v, c000 * dx_v);
     let c10 = c110.mul_add(dr_v, c010 * dx_v);
     let c01 = c101.mul_add(dr_v, c001 * dx_v);
     let c11 = c111.mul_add(dr_v, c011 * dx_v);
 
-    // c0 = c00*(1-dg) + c10*dg
     let c0 = c10.mul_add(dg_v, c00 * dy_v);
     let c1 = c11.mul_add(dg_v, c01 * dy_v);
 
-    // result = c0*(1-db) + c1*db
     c1.mul_add(db_v, c0 * dz_v).store(out);
 }
 
@@ -167,29 +162,32 @@ fn interpolate_trilinear<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BI
 
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_pyramid<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_pyramid_double<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
-    out: &mut [f32; 4],
+    cube: &[Aligned8<f32>],
+    out: &mut [f32; 8],
 ) {
-    type f32x4 = GenericF32x4<Token>;
+    type f32x8 = GenericF32x8<Token>;
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
-    let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
+    let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
             + z as u32) as usize;
-        f32x4::load(token, &cube[offset].0)
+        f32x8::load(token, &cube[offset].0)
     };
 
     let c0 = fetch(x, y, z);
 
-    // Pyramidal three-tetrahedron split by which coord is largest.
     let (c1, c2, c3) = if dr > db && dg > db {
         let x0 = fetch(x_n, y_n, z_n);
         let x1 = fetch(x_n, y_n, z);
@@ -210,9 +208,9 @@ fn interpolate_pyramid<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS
         (x0 - x1, x2 - c0, x3 - c0)
     };
 
-    let dr_v = f32x4::splat(token, dr);
-    let dg_v = f32x4::splat(token, dg);
-    let db_v = f32x4::splat(token, db);
+    let dr_v = f32x8::splat(token, dr);
+    let dg_v = f32x8::splat(token, dg);
+    let db_v = f32x8::splat(token, db);
     let s0 = c1.mul_add(dr_v, c0);
     let s1 = c2.mul_add(dg_v, s0);
     c3.mul_add(db_v, s1).store(out);
@@ -222,29 +220,32 @@ fn interpolate_pyramid<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS
 
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_prism<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_prism_double<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
-    out: &mut [f32; 4],
+    cube: &[Aligned8<f32>],
+    out: &mut [f32; 8],
 ) {
-    type f32x4 = GenericF32x4<Token>;
+    type f32x8 = GenericF32x8<Token>;
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
-    let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
+    let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
             + z as u32) as usize;
-        f32x4::load(token, &cube[offset].0)
+        f32x8::load(token, &cube[offset].0)
     };
 
     let c0 = fetch(x, y, z);
 
-    // Prismatic two-tetrahedron split on dr vs dg.
     let (c1, c2, c3) = if dr > dg {
         let x0 = fetch(x_n, y_n, z_n);
         let x1 = fetch(x_n, y, z_n);
@@ -259,9 +260,9 @@ fn interpolate_prism<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: 
         (x0 - x1, x2 - c0, x3 - c0)
     };
 
-    let dr_v = f32x4::splat(token, dr);
-    let dg_v = f32x4::splat(token, dg);
-    let db_v = f32x4::splat(token, db);
+    let dr_v = f32x8::splat(token, dr);
+    let dg_v = f32x8::splat(token, dg);
+    let db_v = f32x8::splat(token, db);
     let s0 = c1.mul_add(dr_v, c0);
     let s1 = c2.mul_add(dg_v, s0);
     c3.mul_add(db_v, s1).store(out);
@@ -270,7 +271,6 @@ fn interpolate_prism<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversions::interpolator::BarycentricWeight;
     use archmage::incant;
 
     fn make_identity_ramp<const BINS: usize, const GRID_SIZE: usize>()
@@ -285,35 +285,41 @@ mod tests {
         w
     }
 
-    fn make_cube<const GRID_SIZE: usize>() -> Vec<Aligned4<f32>> {
+    fn make_cube<const GRID_SIZE: usize>() -> Vec<Aligned8<f32>> {
         (0..GRID_SIZE.pow(3))
-            .map(|i| Aligned4([i as f32, i as f32, i as f32, 0.0]))
+            .map(|i| {
+                Aligned8([
+                    i as f32, i as f32, i as f32, 0.0, i as f32, i as f32, i as f32, 0.0,
+                ])
+            })
             .collect()
     }
 
     #[test]
-    fn tetra_smoke() {
+    fn tetra_double_smoke() {
         const GRID_SIZE: usize = 2;
         const BINS: usize = 256;
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
-        let mut out = [0f32; 4];
+        let mut out = [0f32; 8];
         incant!(
-            interpolate_tetra::<u8, GRID_SIZE, BINS>(0u8, 0u8, 0u8, &*weights, &cube, &mut out,),
+            interpolate_tetra_double::<u8, GRID_SIZE, BINS>(
+                128u8, 64u8, 200u8, &*weights, &cube, &mut out,
+            ),
             [v3, neon, wasm128, scalar]
         );
     }
 
     #[test]
-    fn trilinear_smoke() {
+    fn trilinear_double_smoke() {
         const GRID_SIZE: usize = 2;
         const BINS: usize = 256;
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
-        let mut out = [0f32; 4];
+        let mut out = [0f32; 8];
         incant!(
-            interpolate_trilinear::<u8, GRID_SIZE, BINS>(
-                128u8, 64u8, 200u8, &*weights, &cube, &mut out,
+            interpolate_trilinear_double::<u8, GRID_SIZE, BINS>(
+                30u8, 90u8, 150u8, &*weights, &cube, &mut out,
             ),
             [v3, neon, wasm128, scalar]
         );
@@ -321,14 +327,14 @@ mod tests {
 
     #[cfg(feature = "options")]
     #[test]
-    fn pyramid_smoke() {
+    fn pyramid_double_smoke() {
         const GRID_SIZE: usize = 2;
         const BINS: usize = 256;
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
-        let mut out = [0f32; 4];
+        let mut out = [0f32; 8];
         incant!(
-            interpolate_pyramid::<u8, GRID_SIZE, BINS>(
+            interpolate_pyramid_double::<u8, GRID_SIZE, BINS>(
                 50u8, 100u8, 150u8, &*weights, &cube, &mut out,
             ),
             [v3, neon, wasm128, scalar]
@@ -337,14 +343,16 @@ mod tests {
 
     #[cfg(feature = "options")]
     #[test]
-    fn prism_smoke() {
+    fn prism_double_smoke() {
         const GRID_SIZE: usize = 2;
         const BINS: usize = 256;
         let weights = make_identity_ramp::<BINS, GRID_SIZE>();
         let cube = make_cube::<GRID_SIZE>();
-        let mut out = [0f32; 4];
+        let mut out = [0f32; 8];
         incant!(
-            interpolate_prism::<u8, GRID_SIZE, BINS>(25u8, 75u8, 175u8, &*weights, &cube, &mut out,),
+            interpolate_prism_double::<u8, GRID_SIZE, BINS>(
+                25u8, 75u8, 175u8, &*weights, &cube, &mut out,
+            ),
             [v3, neon, wasm128, scalar]
         );
     }
