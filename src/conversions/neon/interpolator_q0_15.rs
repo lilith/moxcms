@@ -29,6 +29,7 @@
 #![cfg(feature = "neon_luts")]
 use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
 use crate::math::FusedMultiplyAdd;
+use archmage::SimdToken;
 use num_traits::AsPrimitive;
 use std::arch::aarch64::*;
 use std::ops::{Add, Mul, Sub};
@@ -442,13 +443,169 @@ macro_rules! define_md_inter_neon_d {
     };
 }
 
+// Single-variant NEON Q0.15 interpolators — dispatch through the
+// magetypes Q0.15 probe. Probe outputs `[i16; 8]` (low 4 data + high
+// 4 zero-padded); `vld1_s16(out.as_ptr())` loads only the low 4 lanes
+// into `int16x4_t`, matching the hand-written `NeonVectorQ0_15`
+// shape. Uses `NeonToken` — the scalar `q15_mulhrs` in the probe
+// relies on LLVM autovec (which may not emit `vqrdmulhq_s16` without
+// `rdm` target_feature). Bringing the probe up to `rdm`-grade codegen
+// is follow-up via a `#[magetypes(arm_v2, ...)]` tier.
+
+#[archmage::arcane]
+fn tetra_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[NeonAlignedI16x4],
+) -> NeonVectorQ0_15 {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_tetra_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVectorQ0_15 {
+        v: unsafe { vld1_s16(out.as_ptr()) },
+    }
+}
+
 #[cfg(feature = "options")]
-define_md_inter_neon!(TetrahedralNeonQ0_15);
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    NeonMdInterpolationQ0_15<BINS, U> for TetrahedralNeonQ0_15<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedI16x4],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> NeonVectorQ0_15 {
+        let token =
+            archmage::NeonToken::summon().expect("TetrahedralNeonQ0_15 dispatched without NEON");
+        tetra_neon_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
+
+#[archmage::arcane]
+fn pyramid_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[NeonAlignedI16x4],
+) -> NeonVectorQ0_15 {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_pyramid_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVectorQ0_15 {
+        v: unsafe { vld1_s16(out.as_ptr()) },
+    }
+}
+
 #[cfg(feature = "options")]
-define_md_inter_neon!(PyramidalNeonQ0_15);
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    NeonMdInterpolationQ0_15<BINS, U> for PyramidalNeonQ0_15<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedI16x4],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> NeonVectorQ0_15 {
+        let token =
+            archmage::NeonToken::summon().expect("PyramidalNeonQ0_15 dispatched without NEON");
+        pyramid_neon_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
+
+#[archmage::arcane]
+fn prism_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[NeonAlignedI16x4],
+) -> NeonVectorQ0_15 {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_prism_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVectorQ0_15 {
+        v: unsafe { vld1_s16(out.as_ptr()) },
+    }
+}
+
 #[cfg(feature = "options")]
-define_md_inter_neon!(PrismaticNeonQ0_15);
-define_md_inter_neon!(TrilinearNeonQ0_15);
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    NeonMdInterpolationQ0_15<BINS, U> for PrismaticNeonQ0_15<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedI16x4],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> NeonVectorQ0_15 {
+        let token =
+            archmage::NeonToken::summon().expect("PrismaticNeonQ0_15 dispatched without NEON");
+        prism_neon_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
+
+#[archmage::arcane]
+fn trilinear_neon_q0_15_dispatch<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[NeonAlignedI16x4],
+) -> NeonVectorQ0_15 {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_trilinear_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVectorQ0_15 {
+        v: unsafe { vld1_s16(out.as_ptr()) },
+    }
+}
+
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    NeonMdInterpolationQ0_15<BINS, U> for TrilinearNeonQ0_15<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedI16x4],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> NeonVectorQ0_15 {
+        let token =
+            archmage::NeonToken::summon().expect("TrilinearNeonQ0_15 dispatched without NEON");
+        trilinear_neon_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
 #[cfg(feature = "options")]
 define_md_inter_neon_d!(PrismaticNeonQ0_15Double);
 #[cfg(feature = "options")]

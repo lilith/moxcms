@@ -10,7 +10,7 @@
 1	src/conversions/avx/t_lut3_to_3_q0_15.rs
 1	src/conversions/avx/t_lut3_to_3.rs
 1	src/conversions/interpolator.rs
-20	src/conversions/neon/interpolator_q0_15.rs
+28	src/conversions/neon/interpolator_q0_15.rs
 32	src/conversions/neon/interpolator.rs
 1	src/conversions/neon/lut4_to_3_q0_15.rs
 3	src/conversions/neon/lut4_to_3.rs
