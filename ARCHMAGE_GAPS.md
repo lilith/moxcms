@@ -164,11 +164,26 @@ Per-tier lowering:
   `[v128; 2]`, `from_halves` is `[lo_repr, hi_repr]`
 - `ScalarToken`: `[..lo_array, ..hi_array]` — 8-element i / f array
 
-The token parameter isn't used for safety — all the SIMD feature
-bits are already in `T` — but it matches the construction-gated
-pattern of the rest of the API. `splat`, `load`, `zero`,
-`from_array` all take a token as a presence witness; `from_halves`
-should match.
+The token isn't decorative — **raising on x86 needs real CPU
+feature proof the narrower halves don't carry on their own**.
+`f32x4<X64V3Token>` exists on any V3 CPU, but combining two of
+them into `f32x8` emits `vinsertf128` (or `vmovaps` ymm-pair)
+which is **AVX** — a *different* ISA tier than the SSE4.1 you'd
+need for `f32x4` alone. The token passed to `from_halves` is what
+proves AVX (and hence the 256-bit-capable ISA path) is available.
+
+Lowering (`split` / `to_halves`) is the other direction and
+doesn't need a token: extracting the low/high 128 bits of an
+already-existing `ymm` register is just `vextractf128` which comes
+with the same ISA tier the 256-bit vector was built under — and
+on NEON / Wasm128 where the wider type is literally a Repr pair,
+lowering is a tuple destructure.
+
+On NEON/Wasm128, `GenericF32x8<T>` polyfills to a Repr pair, so
+raising is also just a tuple construction — no wider ISA required.
+The token is redundant in those tiers, but the API takes one
+uniformly to match the construction-gated pattern of `splat` /
+`load` / `zero` / `from_array`.
 
 Same shape for `i16x16::from_halves(token: T, lo: i16x8<T>,
 hi: i16x8<T>)`, `i32x8::from_halves`, etc.
