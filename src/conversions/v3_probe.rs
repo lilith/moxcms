@@ -14,7 +14,7 @@
 #![allow(dead_code)]
 
 use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
-use archmage::{SimdToken, X64V3Token};
+use archmage::X64V3Token;
 use magetypes::simd::v3::f32x4;
 use num_traits::AsPrimitive;
 
@@ -112,6 +112,7 @@ impl<const GRID_SIZE: usize> TetrahedralV3<GRID_SIZE> {
 mod tests {
     use super::*;
     use crate::conversions::interpolator::BarycentricWeight;
+    use archmage::SimdToken;
 
     #[test]
     fn v3_probe_runs_if_avx2_available() {
