@@ -34,7 +34,11 @@ use num_traits::AsPrimitive;
 use std::arch::x86_64::*;
 use std::ops::{Add, Mul, Sub};
 
+// `#[derive(Pod, Zeroable)]` lets the adapter helpers below cast
+// `&[SseAlignedF32]` → `&[simd_interp::Aligned4F32]` via
+// `bytemuck::cast_slice` — no raw-pointer slice reinterpret.
 #[repr(align(16), C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct SseAlignedF32(pub(crate) [f32; 4]);
 
 #[cfg(feature = "options")]
@@ -420,8 +424,7 @@ fn tetra_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const B
     // `#[repr(align(16), C)]` wrappers of `[f32; 4]` — identical
     // ABI layout, same alignment, same size. The slice cast is a
     // pure reinterpret.
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
 
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_tetra_v3::<U, GRID_SIZE, BINS>(
@@ -463,8 +466,7 @@ fn pyramid_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const
     lut: &[BarycentricWeight<f32>; BINS],
     table: &[SseAlignedF32],
 ) -> AvxVectorSse {
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_pyramid_v3::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -502,8 +504,7 @@ fn prism_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const B
     lut: &[BarycentricWeight<f32>; BINS],
     table: &[SseAlignedF32],
 ) -> AvxVectorSse {
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_prism_v3::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -540,8 +541,7 @@ fn trilinear_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, con
     lut: &[BarycentricWeight<f32>; BINS],
     table: &[SseAlignedF32],
 ) -> AvxVectorSse {
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_trilinear_v3::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,

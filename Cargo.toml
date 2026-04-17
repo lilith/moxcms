@@ -27,6 +27,13 @@ pxfm = "^0.1.1"
 # `unsafe { intrinsic }` blocks individually.
 archmage = { version = "0.9.20", default-features = false }
 magetypes = { version = "0.9.20", default-features = false, features = ["std"] }
+# `bytemuck::cast_slice` lets adapter helpers reinterpret the
+# per-arch alignment wrappers (`SseAlignedF32`, `NeonAlignedF32`,
+# `AvxAlignedI16`, `NeonAlignedI16x4`) into the concrete probe
+# types (`Aligned4F32`, `Aligned4I16`) without `unsafe { from_raw_parts }`.
+# Both sides `#[derive(Pod, Zeroable)]` — the derive verifies layout
+# compatibility, replacing 16 `unsafe` blocks across the integration files.
+bytemuck = { version = "1.25.0", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 rand = "0.10.0"

@@ -438,8 +438,7 @@ fn tetra_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS
     lut: &[BarycentricWeight<f32>; BINS],
     table: &[NeonAlignedF32],
 ) -> NeonVector {
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_tetra_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -474,8 +473,7 @@ fn pyramid_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BI
     lut: &[BarycentricWeight<f32>; BINS],
     table: &[NeonAlignedF32],
 ) -> NeonVector {
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_pyramid_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -510,8 +508,7 @@ fn prism_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS
     lut: &[BarycentricWeight<f32>; BINS],
     table: &[NeonAlignedF32],
 ) -> NeonVector {
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_prism_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -546,8 +543,7 @@ fn trilinear_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const 
     lut: &[BarycentricWeight<f32>; BINS],
     table: &[NeonAlignedF32],
 ) -> NeonVector {
-    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp::Aligned4F32] = bytemuck::cast_slice(table);
     let mut out = [0f32; 4];
     crate::conversions::simd_interp::interpolate_trilinear_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,

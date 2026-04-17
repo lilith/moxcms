@@ -34,7 +34,11 @@ use num_traits::AsPrimitive;
 use std::arch::x86_64::*;
 use std::ops::{Add, Mul, Sub};
 
+// `#[derive(Pod, Zeroable)]` lets the adapter helpers below cast
+// `&[AvxAlignedI16]` → `&[simd_interp_q0_15::Aligned4I16]` via
+// `bytemuck::cast_slice`.
 #[repr(align(8), C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct AvxAlignedI16(pub(crate) [i16; 4]);
 
 #[cfg(feature = "options")]
@@ -394,8 +398,7 @@ fn tetra_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[AvxAlignedI16],
 ) -> AvxVectorQ0_15Sse {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_tetra_v3::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -432,8 +435,7 @@ fn pyramid_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, con
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[AvxAlignedI16],
 ) -> AvxVectorQ0_15Sse {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_pyramid_v3::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -470,8 +472,7 @@ fn prism_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[AvxAlignedI16],
 ) -> AvxVectorQ0_15Sse {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_prism_v3::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -512,8 +513,7 @@ fn trilinear_avx_q0_15_dispatch<
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[AvxAlignedI16],
 ) -> AvxVectorQ0_15Sse {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_trilinear_v3::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,

@@ -100,4 +100,5 @@ pub(crate) struct NeonAlignedU16(pub(crate) [u16; 8]);
 
 #[repr(align(16), C)]
 #[allow(unused)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct NeonAlignedF32(pub(crate) [f32; 4]);

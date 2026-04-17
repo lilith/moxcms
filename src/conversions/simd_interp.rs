@@ -22,18 +22,22 @@ use archmage::magetypes;
 use magetypes::simd::generic::f32x4 as GenericF32x4;
 use num_traits::AsPrimitive;
 
-/// 4-lane aligned LUT storage. `#[repr(align(16), C)]` keeps `movaps`
-/// alignment on x86 and 16-byte alignment on NEON/wasm128 — same
-/// contract the hand-written `SseAlignedF32` / `NeonAlignedF32` kept.
-///
-/// (Still generic-shaped for call-site readability. A `bytemuck::Pod`
-/// derive is blocked on the generic parameter — `Pod` can't verify
-/// padding for non-`packed` generic structs — so the adapters still
-/// rely on a raw-pointer slice reinterpret to bridge the hand-written
-/// `SseAlignedF32` / `NeonAlignedF32` slices. See `ARCHMAGE_GAPS.md`
-/// entry #8.)
+/// 4-lane f32 aligned cube entry. `#[repr(align(16), C)]` keeps
+/// `movaps`-grade alignment on x86 and matches the hand-written
+/// `SseAlignedF32` / `NeonAlignedF32` layout. Concrete (not
+/// generic) so `bytemuck::Pod` derive can verify padding statically
+/// — adapter helpers cast `&[SseAlignedF32]` → `&[Aligned4F32]`
+/// via `bytemuck::cast_slice` — safe, no raw pointer reinterpret.
 #[repr(align(16), C)]
-pub(crate) struct Aligned4<T>(pub(crate) [T; 4]);
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct Aligned4F32(pub(crate) [f32; 4]);
+
+impl Aligned4F32 {
+    #[inline(always)]
+    pub(crate) const fn new(v: [f32; 4]) -> Self {
+        Self(v)
+    }
+}
 
 // --- Tetrahedral ---------------------------------------------------------
 
@@ -53,7 +57,7 @@ pub(crate) fn interpolate_tetra<
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
+    cube: &[Aligned4F32],
     out: &mut [f32; 4],
 ) {
     type f32x4 = GenericF32x4<Token>;
@@ -146,7 +150,7 @@ pub(crate) fn interpolate_trilinear<
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
+    cube: &[Aligned4F32],
     out: &mut [f32; 4],
 ) {
     type f32x4 = GenericF32x4<Token>;
@@ -219,7 +223,7 @@ pub(crate) fn interpolate_pyramid<
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
+    cube: &[Aligned4F32],
     out: &mut [f32; 4],
 ) {
     type f32x4 = GenericF32x4<Token>;
@@ -311,7 +315,7 @@ pub(crate) fn interpolate_prism<
     in_g: U,
     in_b: U,
     lut: &[BarycentricWeight<f32>; BINS],
-    cube: &[Aligned4<f32>],
+    cube: &[Aligned4F32],
     out: &mut [f32; 4],
 ) {
     type f32x4 = GenericF32x4<Token>;
@@ -395,7 +399,7 @@ mod tests {
         in_g: u8,
         in_b: u8,
         lut: &[BarycentricWeight<f32>; 256],
-        cube: &[Aligned4<f32>],
+        cube: &[Aligned4F32],
     ) -> [f32; 4] {
         let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
         let fetch = |x: i32, y: i32, z: i32| -> [f32; 4] {
@@ -464,7 +468,7 @@ mod tests {
 
     /// Build a deterministic non-trivial cube so every branch of the
     /// tetra decomposition actually sees distinct values.
-    fn random_cube<const GRID_SIZE: usize>(seed: u32) -> Vec<Aligned4<f32>> {
+    fn random_cube<const GRID_SIZE: usize>(seed: u32) -> Vec<Aligned4F32> {
         (0..GRID_SIZE.pow(3))
             .map(|i| {
                 let k = (i as u32).wrapping_mul(0x9E37_79B1).wrapping_add(seed);
@@ -472,7 +476,7 @@ mod tests {
                     let bits = k.rotate_left(shift) & 0x7FFF_FFFF;
                     bits as f32 / 0x4000_0000u32 as f32 // ~[0, 2)
                 };
-                Aligned4([kf(0), kf(7), kf(13), kf(19)])
+                Aligned4F32([kf(0), kf(7), kf(13), kf(19)])
             })
             .collect()
     }
@@ -496,7 +500,7 @@ mod tests {
         in_g: u8,
         in_b: u8,
         lut: &[BarycentricWeight<f32>; 256],
-        cube: &[Aligned4<f32>],
+        cube: &[Aligned4F32],
     ) -> [f32; 4] {
         let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
         let fetch = |x: i32, y: i32, z: i32| -> [f32; 4] {
@@ -539,7 +543,7 @@ mod tests {
         in_g: u8,
         in_b: u8,
         lut: &[BarycentricWeight<f32>; 256],
-        cube: &[Aligned4<f32>],
+        cube: &[Aligned4F32],
     ) -> [f32; 4] {
         let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
         let fetch = |x: i32, y: i32, z: i32| -> [f32; 4] {
@@ -612,7 +616,7 @@ mod tests {
         in_g: u8,
         in_b: u8,
         lut: &[BarycentricWeight<f32>; 256],
-        cube: &[Aligned4<f32>],
+        cube: &[Aligned4F32],
     ) -> [f32; 4] {
         let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
         let fetch = |x: i32, y: i32, z: i32| -> [f32; 4] {
@@ -778,9 +782,9 @@ mod tests {
         w
     }
 
-    fn make_cube<const GRID_SIZE: usize>() -> Vec<Aligned4<f32>> {
+    fn make_cube<const GRID_SIZE: usize>() -> Vec<Aligned4F32> {
         (0..GRID_SIZE.pow(3))
-            .map(|i| Aligned4([i as f32, i as f32, i as f32, 0.0]))
+            .map(|i| Aligned4F32([i as f32, i as f32, i as f32, 0.0]))
             .collect()
     }
 

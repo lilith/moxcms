@@ -30,8 +30,11 @@ use magetypes::simd::generic::i16x8 as GenericI16x8;
 use num_traits::AsPrimitive;
 
 /// 4-lane aligned i16 LUT storage — half an i16x8 worth. High 4 lanes
-/// padded with zero, consumed as an `&[i16; 8]` load.
+/// padded with zero, consumed as an `&[i16; 8]` load. `Pod`+`Zeroable`
+/// derived so `bytemuck::cast_slice` can bridge the per-arch wrappers
+/// (`AvxAlignedI16`, `NeonAlignedI16x4`).
 #[repr(align(8), C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Aligned4I16(pub(crate) [i16; 4]);
 
 /// Fixed-point Q0.15 mulhrs: `((a * b + 0x4000) >> 15)` lane-wise.

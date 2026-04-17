@@ -35,6 +35,7 @@ use std::arch::aarch64::*;
 use std::ops::{Add, Mul, Sub};
 
 #[repr(align(8), C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct NeonAlignedI16x4(pub(crate) [i16; 4]);
 
 #[cfg(feature = "options")]
@@ -461,8 +462,7 @@ fn tetra_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, cons
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[NeonAlignedI16x4],
 ) -> NeonVectorQ0_15 {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_tetra_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -499,8 +499,7 @@ fn pyramid_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, co
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[NeonAlignedI16x4],
 ) -> NeonVectorQ0_15 {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_pyramid_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -537,8 +536,7 @@ fn prism_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, cons
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[NeonAlignedI16x4],
 ) -> NeonVectorQ0_15 {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_prism_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
@@ -579,8 +577,7 @@ fn trilinear_neon_q0_15_dispatch<
     lut: &[BarycentricWeight<i16>; BINS],
     table: &[NeonAlignedI16x4],
 ) -> NeonVectorQ0_15 {
-    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
-        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] = bytemuck::cast_slice(table);
     let mut out = [0i16; 8];
     crate::conversions::simd_interp_q0_15::interpolate_trilinear_neon::<U, GRID_SIZE, BINS>(
         token, in_r, in_g, in_b, lut, cube, &mut out,
