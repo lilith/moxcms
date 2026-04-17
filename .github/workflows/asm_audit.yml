@@ -23,6 +23,8 @@ on:
     branches:
       - 'safe-bary-*'
       - 'asm-audit-*'
+      - 'magetypes-*'
+      - 'apr16-unsafe-reduction'
   pull_request:
     branches:
       - 'master'
