@@ -27,6 +27,7 @@
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 use crate::CmsError;
+use crate::err::invalid_profile;
 use crate::writer::write_u16_be;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -80,7 +81,7 @@ impl ColorDateTime {
     /// Parses slice for date time
     pub fn new_from_slice(slice: &[u8]) -> Result<ColorDateTime, CmsError> {
         if slice.len() != 12 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let year = u16::from_be_bytes([slice[0], slice[1]]);
         let month = u16::from_be_bytes([slice[2], slice[3]]);

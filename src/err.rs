@@ -141,3 +141,18 @@ macro_rules! try_vec {
 }
 
 pub(crate) use try_vec;
+
+/// Diagnostic helper: when the `trace-invalid-profile` feature is enabled,
+/// prints file:line for every `InvalidProfile` construction site so we can
+/// locate failure paths without restructuring the error enum. No-op
+/// otherwise. Use via `return Err(invalid_profile());` at call sites.
+#[inline]
+#[track_caller]
+pub(crate) fn invalid_profile() -> CmsError {
+    #[cfg(feature = "trace-invalid-profile")]
+    {
+        let loc = std::panic::Location::caller();
+        eprintln!("[moxcms-invalid-profile] at {}:{}", loc.file(), loc.line());
+    }
+    CmsError::InvalidProfile
+}

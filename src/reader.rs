@@ -26,6 +26,7 @@
  * // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+use crate::err::invalid_profile;
 use crate::helpers::{read_matrix_3d, read_vector_3d};
 use crate::profile::LutDataType;
 use crate::safe_math::{SafeAdd, SafeMul, SafePowi};
@@ -114,11 +115,11 @@ impl ColorProfile {
         let tag_size = if tag_size == 0 { TAG_SIZE } else { tag_size };
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..last_tag_offset];
         if tag.len() < 48 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
         LutType::try_from(tag_type)
@@ -133,7 +134,7 @@ impl ColorProfile {
             return Ok(None);
         }
         if slice.len() < entry.safe_add(36)? {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..entry.safe_add(36)?];
         let tag_type =
@@ -184,7 +185,7 @@ impl ColorProfile {
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..last_tag_offset];
         if tag.len() < 8 {
@@ -201,7 +202,7 @@ impl ColorProfile {
             return Ok(Some(ProfileText::PlainString(str)));
         } else if tag_type == TagTypeDefinition::MultiLocalizedUnicode {
             if tag.len() < 28 {
-                return Err(CmsError::InvalidProfile);
+                return Err(invalid_profile());
             }
             // let record_size = u32::from_be_bytes([tag[12], tag[13], tag[14], tag[15]]) as usize;
             // // Record size is reserved to be 12.
@@ -239,7 +240,7 @@ impl ColorProfile {
                     28 + 12 * (record - 1)
                 };
                 if tag.len() < localizable_header_offset + 12 {
-                    return Err(CmsError::InvalidProfile);
+                    return Err(invalid_profile());
                 }
                 let choked = &tag[localizable_header_offset..localizable_header_offset + 12];
 
@@ -266,12 +267,12 @@ impl ColorProfile {
             return Ok(Some(ProfileText::Localizable(records)));
         } else if tag_type == TagTypeDefinition::Description {
             if tag.len() < 12 {
-                return Err(CmsError::InvalidProfile);
+                return Err(invalid_profile());
             }
             let ascii_length = u32::from_be_bytes([tag[8], tag[9], tag[10], tag[11]]) as usize;
             let ascii_end = 12usize.safe_add(ascii_length)?;
             if tag.len() < ascii_end {
-                return Err(CmsError::InvalidProfile);
+                return Err(invalid_profile());
             }
             let sliced = &tag[12..ascii_end];
             let ascii_string = String::from_utf8_lossy(sliced)
@@ -294,6 +295,36 @@ impl ColorProfile {
             })));
         }
         Ok(None)
+    }
+
+    /// Synthesize a per-channel `entries`-point identity table (interleaved by
+    /// channel). Used when a profile declares 0 or 1 input/output table entries
+    /// (degenerate shorthand for identity) and `permissive` is enabled.
+    fn synth_identity_lut(entries: usize, channels: usize, lut_type: LutType) -> LutStore {
+        debug_assert!(entries >= 2);
+        match lut_type {
+            LutType::Lut8 => {
+                let mut v = Vec::with_capacity(entries * channels);
+                for i in 0..entries {
+                    let ramp = ((i * 255) / (entries - 1)) as u8;
+                    for _ in 0..channels {
+                        v.push(ramp);
+                    }
+                }
+                LutStore::Store8(v)
+            }
+            LutType::Lut16 => {
+                let mut v = Vec::with_capacity(entries * channels);
+                for i in 0..entries {
+                    let ramp = ((i * 65535) / (entries - 1)) as u16;
+                    for _ in 0..channels {
+                        v.push(ramp);
+                    }
+                }
+                LutStore::Store16(v)
+            }
+            _ => unreachable!(),
+        }
     }
 
     fn read_lut_table_f32(table: &[u8], lut_type: LutType) -> Result<LutStore, CmsError> {
@@ -320,14 +351,41 @@ impl ColorProfile {
     ) -> Result<Option<Vec<ToneReprCurve>>, CmsError> {
         let mut curve_offset: usize = offset;
         let mut curves = Vec::new();
-        for _ in 0..length {
+        for _i in 0..length {
             if slice.len() < curve_offset.safe_add(12)? {
-                return Err(CmsError::InvalidProfile);
+                #[cfg(feature = "permissive")]
+                {
+                    // Short region: pad remaining slots with identity.
+                    while curves.len() < length {
+                        curves.push(ToneReprCurve::Lut(Vec::new()));
+                    }
+                    return Ok(Some(curves));
+                }
+                #[cfg(not(feature = "permissive"))]
+                return Err(invalid_profile());
             }
+
+            // In permissive mode, if the bytes here aren't a recognized curve
+            // signature ('curv' or 'para'), stop and pad with identity. Some
+            // profiles (e.g. Linux-bundled Crayons/x11-colors named-color Lab
+            // profiles) declare fewer curves than the channel count suggests,
+            // relying on the caller to fall back to identity for the rest.
+            #[cfg(feature = "permissive")]
+            {
+                let sig = &slice[curve_offset..curve_offset + 4];
+                let is_curve_sig = sig == b"curv" || sig == b"para";
+                if !is_curve_sig {
+                    while curves.len() < length {
+                        curves.push(ToneReprCurve::Lut(Vec::new()));
+                    }
+                    return Ok(Some(curves));
+                }
+            }
+
             let mut tag_size = 0usize;
             let new_curve = Self::read_trc_tag(slice, curve_offset, 0, &mut tag_size, options)?;
             match new_curve {
-                None => return Err(CmsError::InvalidProfile),
+                None => return Err(invalid_profile()),
                 Some(curve) => curves.push(curve),
             }
             curve_offset += tag_size;
@@ -351,11 +409,11 @@ impl ColorProfile {
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..last_tag_offset];
         if tag.len() < 48 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
         let tag_type_definition = TagTypeDefinition::from(tag_type);
@@ -380,7 +438,7 @@ impl ColorProfile {
         if matrix_offset != 0 {
             let matrix_end = matrix_offset.safe_add(12 * 4)?;
             if tag.len() < matrix_end {
-                return Err(CmsError::InvalidProfile);
+                return Err(invalid_profile());
             }
 
             let m_tag = &tag[matrix_offset..matrix_end];
@@ -398,7 +456,7 @@ impl ColorProfile {
             if clut_offset != 0 {
                 // Check if CLUT formed correctly
                 if clut_offset.safe_add(20)? > tag.len() {
-                    return Err(CmsError::InvalidProfile);
+                    return Err(invalid_profile());
                 }
 
                 let clut_sizes_slice = &tag[clut_offset..clut_offset.safe_add(16)?];
@@ -469,14 +527,14 @@ impl ColorProfile {
                 let clut_header = &tag[clut_offset..clut_offset20];
                 let entry_size = clut_header[16];
                 if entry_size != 1 && entry_size != 2 {
-                    return Err(CmsError::InvalidProfile);
+                    return Err(invalid_profile());
                 }
 
                 let clut_end =
                     clut_offset20.safe_add(clut_size.safe_mul(entry_size as u32)? as usize)?;
 
                 if tag.len() < clut_end {
-                    return Err(CmsError::InvalidProfile);
+                    return Err(invalid_profile());
                 }
 
                 let shaped_clut_table = &tag[clut_offset20..clut_end];
@@ -505,7 +563,7 @@ impl ColorProfile {
                 },
                 options,
             )?
-            .ok_or(CmsError::InvalidProfile)?
+            .ok_or(invalid_profile())?
         };
 
         let m_curves = if m_curve_offset == 0 {
@@ -521,7 +579,7 @@ impl ColorProfile {
                 },
                 options,
             )?
-            .ok_or(CmsError::InvalidProfile)?
+            .ok_or(invalid_profile())?
         };
 
         let b_curves = if b_curve_offset == 0 {
@@ -537,7 +595,7 @@ impl ColorProfile {
                 },
                 options,
             )?
-            .ok_or(CmsError::InvalidProfile)?
+            .ok_or(invalid_profile())?
         };
 
         let wh = LutWarehouse::Multidimensional(LutMultidimensionalType {
@@ -565,36 +623,65 @@ impl ColorProfile {
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..last_tag_offset];
         if tag.len() < 48 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
         let lut_type = LutType::try_from(tag_type)?;
         assert!(lut_type == LutType::Lut8 || lut_type == LutType::Lut16);
 
         if lut_type == LutType::Lut16 && tag.len() < 52 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
 
-        let num_input_table_entries: u16 = match lut_type {
+        let raw_num_input_table_entries: u16 = match lut_type {
             LutType::Lut8 => 256,
             LutType::Lut16 => u16::from_be_bytes([tag[48], tag[49]]),
             _ => unreachable!(),
         };
-        let num_output_table_entries: u16 = match lut_type {
+        let raw_num_output_table_entries: u16 = match lut_type {
             LutType::Lut8 => 256,
             LutType::Lut16 => u16::from_be_bytes([tag[50], tag[51]]),
             _ => unreachable!(),
         };
 
-        if !(2..=4096).contains(&num_input_table_entries)
-            || !(2..=4096).contains(&num_output_table_entries)
+        // Some real-world vendor profiles (e.g. ColorGATE RIP output) record
+        // degenerate input/output table counts (0 or 1) as shorthand for
+        // "identity — the CLUT does all the work". The ICC spec technically
+        // requires ≥2 entries, but lcms2 and skcms both accept these. When
+        // `permissive` is enabled we synthesize a 2-point identity table for
+        // degenerate sides and keep parsing.
+        let degenerate_input = raw_num_input_table_entries < 2;
+        let degenerate_output = raw_num_output_table_entries < 2;
+
+        #[cfg(not(feature = "permissive"))]
         {
-            return Err(CmsError::InvalidProfile);
+            if !(2..=4096).contains(&raw_num_input_table_entries)
+                || !(2..=4096).contains(&raw_num_output_table_entries)
+            {
+                return Err(invalid_profile());
+            }
         }
+        #[cfg(feature = "permissive")]
+        {
+            if raw_num_input_table_entries > 4096 || raw_num_output_table_entries > 4096 {
+                return Err(invalid_profile());
+            }
+        }
+
+        let num_input_table_entries: u16 = if degenerate_input {
+            2
+        } else {
+            raw_num_input_table_entries
+        };
+        let num_output_table_entries: u16 = if degenerate_output {
+            2
+        } else {
+            raw_num_output_table_entries
+        };
 
         let input_offset: usize = match lut_type {
             LutType::Lut8 => 48,
@@ -612,29 +699,37 @@ impl ColorProfile {
         let is_3_to_4 = in_chan == 3 || out_chan == 4;
         let is_4_to_3 = in_chan == 4 || out_chan == 3;
         if !is_3_to_4 && !is_4_to_3 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let grid_points = tag[10];
         let clut_size = (grid_points as u32).safe_powi(in_chan as u32)? as usize;
 
         if !(1..=parsing_options.max_allowed_clut_size).contains(&clut_size) {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
 
         assert!(tag.len() >= 48);
 
         let transform = read_matrix_3d(&tag[12..48])?;
 
-        let lut_input_size = num_input_table_entries.safe_mul(in_chan as u16)? as usize;
+        let raw_lut_input_size = raw_num_input_table_entries.safe_mul(in_chan as u16)? as usize;
 
-        let linearization_table_end = lut_input_size
-            .safe_mul(entry_size)?
-            .safe_add(input_offset)?;
+        // Advance the reader by whatever bytes the on-disk degenerate/valid
+        // input tables actually consume. For synthesized identity we still
+        // need to know where the CLUT starts.
+        let raw_input_bytes = raw_lut_input_size.safe_mul(entry_size)?;
+        let linearization_table_end = raw_input_bytes.safe_add(input_offset)?;
         if tag.len() < linearization_table_end {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
-        let shaped_input_table = &tag[input_offset..linearization_table_end];
-        let linearization_table = Self::read_lut_table_f32(shaped_input_table, lut_type)?;
+
+        let linearization_table = if degenerate_input {
+            // Synthesize 2-point identity table for in_chan channels.
+            Self::synth_identity_lut(num_input_table_entries as usize, in_chan as usize, lut_type)
+        } else {
+            let shaped_input_table = &tag[input_offset..linearization_table_end];
+            Self::read_lut_table_f32(shaped_input_table, lut_type)?
+        };
 
         let clut_offset = linearization_table_end;
 
@@ -643,7 +738,7 @@ impl ColorProfile {
             .safe_mul(entry_size)?;
 
         if tag.len() < clut_offset.safe_add(clut_data_size)? {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
 
         let shaped_clut_table = &tag[clut_offset..clut_offset + clut_data_size];
@@ -651,15 +746,23 @@ impl ColorProfile {
 
         let output_offset = clut_offset.safe_add(clut_data_size)?;
 
-        let output_size = (num_output_table_entries as usize).safe_mul(out_chan as usize)?;
-
-        let shaped_output = output_offset.safe_add(output_size.safe_mul(entry_size)?)?;
+        let raw_output_size =
+            (raw_num_output_table_entries as usize).safe_mul(out_chan as usize)?;
+        let shaped_output = output_offset.safe_add(raw_output_size.safe_mul(entry_size)?)?;
         if tag.len() < shaped_output {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
 
-        let shaped_output_table = &tag[output_offset..shaped_output];
-        let gamma_table = Self::read_lut_table_f32(shaped_output_table, lut_type)?;
+        let gamma_table = if degenerate_output {
+            Self::synth_identity_lut(
+                num_output_table_entries as usize,
+                out_chan as usize,
+                lut_type,
+            )
+        } else {
+            let shaped_output_table = &tag[output_offset..shaped_output];
+            Self::read_lut_table_f32(shaped_output_table, lut_type)?
+        };
 
         let wh = LutWarehouse::Lut(LutDataType {
             num_input_table_entries,
@@ -682,7 +785,24 @@ impl ColorProfile {
         tag_size: usize,
         parsing_options: &ParsingOptions,
     ) -> Result<Option<LutWarehouse>, CmsError> {
-        let lut_type = Self::read_lut_type(slice, tag_entry as usize, tag_size)?;
+        // In permissive mode, an unrecognized LUT tag type (e.g. `mpet`
+        // MultiProcessElement added in iccMAX, or corrupt garbage type bytes
+        // used by some vendor RIP output) is treated as "no LUT here" so the
+        // parser can still succeed by relying on matrix/TRC tags. Strict mode
+        // propagates the error to reject the profile.
+        let lut_type_result = Self::read_lut_type(slice, tag_entry as usize, tag_size);
+        let lut_type = match lut_type_result {
+            Ok(t) => t,
+            Err(e) => {
+                #[cfg(feature = "permissive")]
+                {
+                    let _ = e;
+                    return Ok(None);
+                }
+                #[cfg(not(feature = "permissive"))]
+                return Err(e);
+            }
+        };
         Ok(if lut_type == LutType::Lut8 || lut_type == LutType::Lut16 {
             Self::read_lut_a_to_b_type(slice, tag_entry as usize, tag_size, parsing_options)?
         } else if lut_type == LutType::LutMba || lut_type == LutType::LutMab {
@@ -800,6 +920,16 @@ impl ColorProfile {
             *read_size = 12 + COUNT_TO_LENGTH[entry_count] * 4;
             Ok(Some(ToneReprCurve::Parametric(params)))
         } else {
+            #[cfg(feature = "trace-invalid-profile")]
+            eprintln!(
+                "[moxcms-unknown-curve-tag] sig={:?} (hex {:02x}{:02x}{:02x}{:02x}) at entry=0x{:x}",
+                std::str::from_utf8(small_tag).unwrap_or("?"),
+                small_tag[0],
+                small_tag[1],
+                small_tag[2],
+                small_tag[3],
+                entry,
+            );
             Err(CmsError::MalformedTrcCurve(
                 "Unknown parametric curve tag".to_string(),
             ))
@@ -813,10 +943,10 @@ impl ColorProfile {
     ) -> Result<Option<Matrix3d>, CmsError> {
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         if slice[entry..].len() < 8 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         if tag_size < 8 {
             return Ok(None);
@@ -828,14 +958,14 @@ impl ColorProfile {
         let c_type =
             TagTypeDefinition::from(u32::from_be_bytes([tag0[0], tag0[1], tag0[2], tag0[3]]));
         if c_type != TagTypeDefinition::S15Fixed16Array {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         if slice.len() < 9 * size_of::<u32>() + 8 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry + 8..last_tag_offset];
         if tag.len() != size_of::<Matrix3f>() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let matrix = read_matrix_3d(tag)?;
         Ok(Some(matrix))
@@ -848,11 +978,11 @@ impl ColorProfile {
         tag_size: usize,
     ) -> Result<Option<TechnologySignatures>, CmsError> {
         if tag_size < TAG_SIZE {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..entry.safe_add(12)?];
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
@@ -875,7 +1005,7 @@ impl ColorProfile {
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..entry.safe_add(20)?];
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
@@ -899,7 +1029,7 @@ impl ColorProfile {
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..entry + 12];
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
@@ -908,7 +1038,7 @@ impl ColorProfile {
             return Ok(None);
         }
         if 36 + entry > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..entry + 36];
         let observer =
@@ -946,7 +1076,7 @@ impl ColorProfile {
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..entry + 12];
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
@@ -957,7 +1087,7 @@ impl ColorProfile {
 
         let tag = &slice[entry..last_tag_offset];
         if tag.len() < 20 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let q15_16_x = i32::from_be_bytes([tag[8], tag[9], tag[10], tag[11]]);
         let q15_16_y = i32::from_be_bytes([tag[12], tag[13], tag[14], tag[15]]);
@@ -978,11 +1108,11 @@ impl ColorProfile {
         }
         let last_tag_offset = tag_size.safe_add(entry)?;
         if last_tag_offset > slice.len() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag = &slice[entry..last_tag_offset];
         if tag.len() < 12 {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tag_type = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
         let def = TagTypeDefinition::from(tag_type);

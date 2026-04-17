@@ -30,7 +30,7 @@ use crate::cicp::{
     CicpColorPrimaries, ColorPrimaries, MatrixCoefficients, TransferCharacteristics,
 };
 use crate::dat::ColorDateTime;
-use crate::err::CmsError;
+use crate::err::{CmsError, invalid_profile};
 use crate::matrix::{Matrix3f, Xyz};
 use crate::reader::s15_fixed16_number_to_float;
 use crate::safe_math::{SafeAdd, SafeMul};
@@ -54,7 +54,7 @@ impl TryFrom<u32> for ProfileSignature {
         if value == u32::from_ne_bytes(*b"acsp").to_be() {
             return Ok(ProfileSignature::Acsp);
         }
-        Err(CmsError::InvalidProfile)
+        Err(invalid_profile())
     }
 }
 
@@ -111,8 +111,18 @@ impl TryFrom<u32> for ProfileVersion {
         // but reject invalid versions (v0.x) and unsupported versions (v5.x+ / ICC MAX)
         match major {
             0 => {
-                // Version 0.x is invalid - reject
-                Err(CmsError::InvalidProfile)
+                // Version 0.x is technically invalid per spec, but some real
+                // profiles in the wild (e.g. skcms-bundled AdobeColorSpin.icc)
+                // have a zero version field and lcms2 accepts them. With
+                // `permissive` enabled we treat them as v2.4 so they parse.
+                #[cfg(feature = "permissive")]
+                {
+                    Ok(ProfileVersion::V2_4)
+                }
+                #[cfg(not(feature = "permissive"))]
+                {
+                    Err(invalid_profile())
+                }
             }
             2 => {
                 // v2.x - map to the appropriate v2 minor version or highest known
@@ -139,9 +149,21 @@ impl TryFrom<u32> for ProfileVersion {
                 }
             }
             _ => {
-                // v5.x+ (ICC MAX) and other unknown versions - reject
-                // ICC MAX has different white point requirements and would produce wrong colors
-                Err(CmsError::InvalidProfile)
+                // v5.x+ (iccMAX) has different white point requirements and
+                // could produce slightly wrong colors if interpreted as v4.
+                // However, many v5 profiles in the wild (e.g. the ICC.org
+                // reference sRGB_D65_MAT / sRGB_D65_colorimetric / sRGB_ISO22028
+                // shipped by skcms) are structurally v4-compatible and lcms2
+                // parses them fine. With `permissive` enabled we treat them as
+                // v4.4 so callers can handle them; strict mode rejects.
+                #[cfg(feature = "permissive")]
+                {
+                    Ok(ProfileVersion::V4_4)
+                }
+                #[cfg(not(feature = "permissive"))]
+                {
+                    Err(invalid_profile())
+                }
             }
         }
     }
@@ -281,7 +303,20 @@ impl TryFrom<u32> for ProfileClass {
         } else if value == u32::from_ne_bytes(*b"nmcl").to_be() {
             return Ok(ProfileClass::Named);
         }
-        Err(CmsError::InvalidProfile)
+        // iccMAX adds additional classes (e.g. 'cenc' for color-encoding space,
+        // 'mid ' for MultiplexIdentification, etc.) that moxcms has no first-
+        // class support for. With `permissive` enabled, treat anything else as
+        // a ColorSpace profile — the downstream parser will still require the
+        // usual tag complement (XYZ/TRC or matrix-shaper) and will reject if
+        // neither is present, so this doesn't open the door to garbage.
+        #[cfg(feature = "permissive")]
+        {
+            Ok(ProfileClass::ColorSpace)
+        }
+        #[cfg(not(feature = "permissive"))]
+        {
+            Err(invalid_profile())
+        }
     }
 }
 
@@ -325,7 +360,7 @@ impl TryFrom<u32> for LutType {
         } else if value == u32::from_ne_bytes(*b"mBA ").to_be() {
             return Ok(LutType::LutMba);
         }
-        Err(CmsError::InvalidProfile)
+        Err(invalid_profile())
     }
 }
 
@@ -394,7 +429,7 @@ impl TryFrom<u32> for DataColorSpace {
         } else if value == u32::from_ne_bytes(*b"FCLR").to_be() {
             return Ok(DataColorSpace::Color15);
         }
-        Err(CmsError::InvalidProfile)
+        Err(invalid_profile())
     }
 }
 
@@ -684,13 +719,13 @@ impl ProfileHeader {
     /// Creates profile from the buffer
     pub(crate) fn new_from_slice(slice: &[u8]) -> Result<Self, CmsError> {
         if slice.len() < size_of::<ProfileHeader>() {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let mut cursor = std::io::Cursor::new(slice);
         let mut buffer = [0u8; size_of::<ProfileHeader>()];
         cursor
             .read_exact(&mut buffer)
-            .map_err(|_| CmsError::InvalidProfile)?;
+            .map_err(|_| invalid_profile())?;
 
         let header = Self {
             size: u32::from_be_bytes(buffer[0..4].try_into().unwrap()),
@@ -704,7 +739,26 @@ impl ProfileHeader {
             data_color_space: DataColorSpace::try_from(u32::from_be_bytes(
                 buffer[16..20].try_into().unwrap(),
             ))?,
-            pcs: DataColorSpace::try_from(u32::from_be_bytes(buffer[20..24].try_into().unwrap()))?,
+            pcs: {
+                let raw = u32::from_be_bytes(buffer[20..24].try_into().unwrap());
+                match DataColorSpace::try_from(raw) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // iccMAX allows profile classes (e.g. 'cenc' color
+                        // encoding, 'spac' color-space) where PCS is zero /
+                        // unspecified. Default to XYZ in permissive mode.
+                        #[cfg(feature = "permissive")]
+                        {
+                            let _ = e;
+                            DataColorSpace::Xyz
+                        }
+                        #[cfg(not(feature = "permissive"))]
+                        {
+                            return Err(e);
+                        }
+                    }
+                }
+            },
             creation_date_time: ColorDateTime::new_from_slice(buffer[24..36].try_into().unwrap())?,
             signature: ProfileSignature::try_from(u32::from_be_bytes(
                 buffer[36..40].try_into().unwrap(),
@@ -985,13 +1039,13 @@ impl ColorProfile {
         let header = ProfileHeader::new_from_slice(slice)?;
         let tags_count = header.tag_count as usize;
         if slice.len() >= options.max_profile_size {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tags_end = tags_count
             .safe_mul(TAG_SIZE)?
             .safe_add(size_of::<ProfileHeader>())?;
         if slice.len() < tags_end {
-            return Err(CmsError::InvalidProfile);
+            return Err(invalid_profile());
         }
         let tags_slice = &slice[size_of::<ProfileHeader>()..tags_end];
         let mut profile = ColorProfile {
@@ -1168,11 +1222,253 @@ impl ColorProfile {
                         profile.calibration_date =
                             Self::read_date_time_tag(slice, tag_entry as usize, tag_size)?;
                     }
+                    Tag::ColorEncodingParams => {
+                        // iccMAX: consume `cept` to populate v4 matrix-shaper
+                        // fields (and a CICP triplet when the primaries +
+                        // transfer match a canonical set). Real v5 sRGB
+                        // encoding profiles (e.g. sRGB_ISO22028) have ONLY a
+                        // cept tag and no rXYZ/gXYZ/etc.
+                        if color_space == DataColorSpace::Rgb
+                            && profile.red_colorant == Xyzd::default()
+                            && let Some(cept) = crate::iccmax::read_cept_matrix_shaper(
+                                slice,
+                                tag_entry as usize,
+                                tag_size,
+                            )?
+                        {
+                            Self::populate_from_cept(&mut profile, &cept);
+                        }
+                    }
+                    Tag::ReferenceName | Tag::ColorSpaceName => {
+                        // utf8Type — informational only (e.g. "ISO 22028-1",
+                        // "sRGB"). We don't store these on ColorProfile
+                        // currently; the structural data in `cept` / `mpet`
+                        // is what makes the profile usable.
+                    }
                 }
             }
         }
 
+        // iccMAX fallback: A2B/B2A tags whose tag-type is `mpet` were skipped
+        // by the LUT reader (it only recognizes mft1/mft2/mAB/mBA). If the
+        // profile still has no matrix-shaper data after the v4 walk, try to
+        // extract one from a recognizable mpet chain.
+        if color_space == DataColorSpace::Rgb && profile.red_colorant == Xyzd::default() {
+            Self::try_populate_matrix_shaper_from_mpet(slice, tags_slice, &mut profile)?;
+        }
+
         Ok(profile)
+    }
+
+    /// Walk the tag table looking for an A2B*/B2A* tag of mpet type that
+    /// decodes to a matrix-shaper chain. The first one we find wins.
+    fn try_populate_matrix_shaper_from_mpet(
+        slice: &[u8],
+        tags_slice: &[u8],
+        profile: &mut ColorProfile,
+    ) -> Result<(), CmsError> {
+        for tag in tags_slice.chunks_exact(TAG_SIZE) {
+            let tag_value = u32::from_be_bytes([tag[0], tag[1], tag[2], tag[3]]);
+            let tag_entry = u32::from_be_bytes([tag[4], tag[5], tag[6], tag[7]]) as usize;
+            let tag_size = u32::from_be_bytes([tag[8], tag[9], tag[10], tag[11]]) as usize;
+            let parsed = match Tag::try_from(tag_value) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            // Restrict mpet extraction to A2B (device→PCS) tags. In that
+            // direction the cvst sub-element stores the EOTF (encoded →
+            // linear), which is what moxcms's red_trc/green_trc/blue_trc
+            // slots expect. B2A tags would store the inverse OETF curves and
+            // would need extra inversion before being usable here.
+            let is_a2b = matches!(
+                parsed,
+                Tag::DeviceToPcsLutPerceptual
+                    | Tag::DeviceToPcsLutColorimetric
+                    | Tag::DeviceToPcsLutSaturation
+            );
+            if !is_a2b {
+                continue;
+            }
+            // Tag type sniff
+            if tag_entry + 4 > slice.len() {
+                continue;
+            }
+            if &slice[tag_entry..tag_entry + 4] != b"mpet" {
+                continue;
+            }
+            let Some(ms) = crate::iccmax::read_mpet_matrix_shaper(slice, tag_entry, tag_size)?
+            else {
+                continue;
+            };
+            // For an A2B (device→PCS) we want curves followed by matrix; for
+            // a B2A (PCS→device) the chain is matrix then inverse curves.
+            // Either chain gives us the matrix and the per-channel curves; we
+            // populate them directly into v4 fields and let downstream
+            // transform code take it from there.
+            let m = ms.matrix;
+            profile.red_colorant = Xyzd {
+                x: m.v[0][0],
+                y: m.v[1][0],
+                z: m.v[2][0],
+            };
+            profile.green_colorant = Xyzd {
+                x: m.v[0][1],
+                y: m.v[1][1],
+                z: m.v[2][1],
+            };
+            profile.blue_colorant = Xyzd {
+                x: m.v[0][2],
+                y: m.v[1][2],
+                z: m.v[2][2],
+            };
+            if profile.red_trc.is_none() && !ms.curves.is_empty() {
+                profile.red_trc = Some(ms.curves[0].clone());
+            }
+            if profile.green_trc.is_none() && ms.curves.len() >= 2 {
+                profile.green_trc = Some(ms.curves[1].clone());
+            }
+            if profile.blue_trc.is_none() && ms.curves.len() >= 3 {
+                profile.blue_trc = Some(ms.curves[2].clone());
+            }
+            // Note: ms.offset is currently dropped — for canonical sRGB-style
+            // mpet profiles it is a zero vector (matrix-only chad). If we
+            // encounter profiles with non-zero offset we'll need to bake it
+            // into the white_point pipeline; flagged as a follow-up.
+            return Ok(());
+        }
+        Ok(())
+    }
+
+    /// Build the v4 matrix-shaper representation (red/green/blue colorants
+    /// plus per-channel TRC) from a parsed `cept` structure. Also synthesizes
+    /// a CICP triplet when the primaries + transfer match a canonical
+    /// (BT.709 / BT.2020 / Display-P3 / DCI-P3) set.
+    fn populate_from_cept(profile: &mut ColorProfile, cept: &crate::iccmax::CeptMatrixShaper) {
+        // 1) Convert chromaticities → XYZ tristimulus colorants. The matrix
+        //    columns are the colorants. We need the column scalars s_r/s_g/s_b
+        //    such that M · [s_r, s_g, s_b] = white_xyz, where each column of
+        //    M is the un-scaled (X/y, 1, Z/y) of the corresponding primary.
+        let r = cept.red_xy;
+        let g = cept.green_xy;
+        let b = cept.blue_xy;
+        let w = cept.white_xy;
+        let to_xyz = |c: crate::iccmax::Chromaticity| -> [f64; 3] {
+            if c.y > 0.0 {
+                [c.x / c.y, 1.0, c.z / c.y]
+            } else {
+                [0.0, 1.0, 0.0]
+            }
+        };
+        let r_xyz = to_xyz(r);
+        let g_xyz = to_xyz(g);
+        let b_xyz = to_xyz(b);
+        let w_xyz = to_xyz(w);
+
+        // Column-major 3x3 = [r_xyz | g_xyz | b_xyz]; solve for [s_r, s_g, s_b]
+        // via Cramer's rule (small enough that hand-rolling avoids a dep).
+        let det = r_xyz[0] * (g_xyz[1] * b_xyz[2] - g_xyz[2] * b_xyz[1])
+            - g_xyz[0] * (r_xyz[1] * b_xyz[2] - r_xyz[2] * b_xyz[1])
+            + b_xyz[0] * (r_xyz[1] * g_xyz[2] - r_xyz[2] * g_xyz[1]);
+        if det.abs() < 1e-12 {
+            return; // degenerate matrix, give up rather than emit garbage
+        }
+        let det_x = w_xyz[0] * (g_xyz[1] * b_xyz[2] - g_xyz[2] * b_xyz[1])
+            - g_xyz[0] * (w_xyz[1] * b_xyz[2] - w_xyz[2] * b_xyz[1])
+            + b_xyz[0] * (w_xyz[1] * g_xyz[2] - w_xyz[2] * g_xyz[1]);
+        let det_y = r_xyz[0] * (w_xyz[1] * b_xyz[2] - w_xyz[2] * b_xyz[1])
+            - w_xyz[0] * (r_xyz[1] * b_xyz[2] - r_xyz[2] * b_xyz[1])
+            + b_xyz[0] * (r_xyz[1] * w_xyz[2] - r_xyz[2] * w_xyz[1]);
+        let det_z = r_xyz[0] * (g_xyz[1] * w_xyz[2] - g_xyz[2] * w_xyz[1])
+            - g_xyz[0] * (r_xyz[1] * w_xyz[2] - r_xyz[2] * w_xyz[1])
+            + w_xyz[0] * (r_xyz[1] * g_xyz[2] - r_xyz[2] * g_xyz[1]);
+        let s_r = det_x / det;
+        let s_g = det_y / det;
+        let s_b = det_z / det;
+
+        profile.red_colorant = Xyzd {
+            x: s_r * r_xyz[0],
+            y: s_r * r_xyz[1],
+            z: s_r * r_xyz[2],
+        };
+        profile.green_colorant = Xyzd {
+            x: s_g * g_xyz[0],
+            y: s_g * g_xyz[1],
+            z: s_g * g_xyz[2],
+        };
+        profile.blue_colorant = Xyzd {
+            x: s_b * b_xyz[0],
+            y: s_b * b_xyz[1],
+            z: s_b * b_xyz[2],
+        };
+        if profile.media_white_point.is_none() {
+            profile.media_white_point = Some(Xyzd {
+                x: w_xyz[0],
+                y: w_xyz[1],
+                z: w_xyz[2],
+            });
+        }
+
+        if let Some(curve) = &cept.trc {
+            if profile.red_trc.is_none() {
+                profile.red_trc = Some(curve.clone());
+            }
+            if profile.green_trc.is_none() {
+                profile.green_trc = Some(curve.clone());
+            }
+            if profile.blue_trc.is_none() {
+                profile.blue_trc = Some(curve.clone());
+            }
+        }
+
+        // 2) CICP synthesis + canonical substitution. If both the primaries
+        //    and the transfer match a canonical set, swap the colorant /
+        //    chad / media_white / TRC fields out for the equivalent
+        //    canonical builder. This avoids the D65→D50 Bradford computation
+        //    entirely and produces bit-identical output to ColorProfile::new_<canon>().
+        let primaries_match = crate::iccmax::match_canonical_primaries(r, g, b, w);
+        let transfer_match = cept
+            .trc
+            .as_ref()
+            .and_then(crate::iccmax::match_canonical_transfer);
+
+        if profile.cicp.is_none()
+            && let Some(p) = primaries_match
+        {
+            profile.cicp = Some(crate::CicpProfile {
+                color_primaries: p,
+                transfer_characteristics: transfer_match
+                    .unwrap_or(crate::TransferCharacteristics::Unspecified),
+                matrix_coefficients: crate::MatrixCoefficients::Identity,
+                full_range: true,
+            });
+        }
+
+        if let (Some(prim), Some(trc)) = (primaries_match, transfer_match) {
+            use crate::CicpColorPrimaries as Cp;
+            use crate::TransferCharacteristics as Tc;
+            let canonical: Option<ColorProfile> = match (prim, trc) {
+                (Cp::Bt709, Tc::Srgb) => Some(ColorProfile::new_srgb()),
+                (Cp::Smpte432, Tc::Srgb) => Some(ColorProfile::new_display_p3()),
+                (Cp::Smpte431, _) => Some(ColorProfile::new_dci_p3()),
+                (Cp::Bt2020, Tc::Bt709 | Tc::Bt202010bit) => Some(ColorProfile::new_bt2020()),
+                (Cp::Bt2020, Tc::Smpte2084) => Some(ColorProfile::new_bt2020_pq()),
+                (Cp::Bt2020, Tc::Hlg) => Some(ColorProfile::new_bt2020_hlg()),
+                (Cp::Smpte432, Tc::Smpte2084) => Some(ColorProfile::new_display_p3_pq()),
+                (Cp::Bt709, Tc::Bt470M) => Some(ColorProfile::new_adobe_rgb()),
+                _ => None,
+            };
+            if let Some(c) = canonical {
+                profile.red_colorant = c.red_colorant;
+                profile.green_colorant = c.green_colorant;
+                profile.blue_colorant = c.blue_colorant;
+                profile.white_point = c.white_point;
+                profile.media_white_point = c.media_white_point;
+                profile.chromatic_adaptation = c.chromatic_adaptation;
+                profile.red_trc = c.red_trc;
+                profile.green_trc = c.green_trc;
+                profile.blue_trc = c.blue_trc;
+            }
+        }
     }
 }
 
@@ -1519,26 +1815,33 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "permissive"))]
     #[test]
     fn test_profile_version_parsing_rejected() {
-        // Invalid and unsupported versions should be rejected
+        // Strict mode: invalid and unsupported versions are rejected.
+        assert!(ProfileVersion::try_from(0x00000000).is_err(), "v0.0");
+        assert!(ProfileVersion::try_from(0x05000000).is_err(), "v5.0 iccMAX");
+        assert!(ProfileVersion::try_from(0x06000000).is_err(), "v6.0");
+    }
 
-        // v0.0 - invalid version (no such ICC spec exists)
-        assert!(
-            ProfileVersion::try_from(0x00000000).is_err(),
-            "v0.0 should be rejected"
+    #[cfg(feature = "permissive")]
+    #[test]
+    fn test_profile_version_parsing_permissive() {
+        // Permissive mode: v0.x → v2.4, v5.x+ → v4.4 (lcms2/skcms compatible).
+        assert_eq!(
+            ProfileVersion::try_from(0x00000000).unwrap(),
+            ProfileVersion::V2_4,
+            "v0.0 should be treated as v2.4"
         );
-
-        // v5.0 (iccMAX) - reject because it has different white point requirements
-        assert!(
-            ProfileVersion::try_from(0x05000000).is_err(),
-            "v5.0 should be rejected"
+        assert_eq!(
+            ProfileVersion::try_from(0x05000000).unwrap(),
+            ProfileVersion::V4_4,
+            "v5.0 iccMAX should be treated as v4.4"
         );
-
-        // v6.0 - future/unknown version
-        assert!(
-            ProfileVersion::try_from(0x06000000).is_err(),
-            "v6.0 should be rejected"
+        assert_eq!(
+            ProfileVersion::try_from(0x06000000).unwrap(),
+            ProfileVersion::V4_4,
+            "v6.0 should be treated as v4.4"
         );
     }
 

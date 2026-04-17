@@ -7,4 +7,4 @@ perf.data
 profile.json.gz
 .cargo
 rust-toolchain.toml
-specs
+specs.workongoing

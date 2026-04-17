@@ -26,6 +26,7 @@
  * // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+use crate::err::invalid_profile;
 use crate::matan::*;
 use crate::reader::{
     s15_fixed16_number_to_double, uint8_number_to_float_fast, uint16_number_to_float_fast,
@@ -170,7 +171,7 @@ impl ToneReprCurve {
 
 pub(crate) fn read_matrix_3d(arr: &[u8]) -> Result<Matrix3d, CmsError> {
     if arr.len() < 36 {
-        return Err(CmsError::InvalidProfile);
+        return Err(invalid_profile());
     }
 
     let m_tag = &arr[..36];
@@ -210,7 +211,7 @@ pub(crate) fn read_matrix_3d(arr: &[u8]) -> Result<Matrix3d, CmsError> {
 
 pub(crate) fn read_vector_3d(arr: &[u8]) -> Result<Vector3d, CmsError> {
     if arr.len() < 12 {
-        return Err(CmsError::InvalidProfile);
+        return Err(invalid_profile());
     }
 
     let m_tag = &arr[..12];

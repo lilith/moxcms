@@ -62,6 +62,12 @@ pub(crate) enum Tag {
     CharTarget,
     Technology,
     CalibrationDateTime,
+    /// iccMAX colorEncodingParamsTag — `cept` (tagStructType / colorEncodingParamsStructure).
+    ColorEncodingParams,
+    /// iccMAX referenceNameTag — `rfnm` (utf8Type).
+    ReferenceName,
+    /// iccMAX colorSpaceNameTag — `csnm` (utf8Type).
+    ColorSpaceName,
 }
 
 impl TryFrom<u32> for Tag {
@@ -128,6 +134,12 @@ impl TryFrom<u32> for Tag {
             return Ok(Self::Technology);
         } else if value == u32::from_ne_bytes(*b"calt").to_be() {
             return Ok(Self::CalibrationDateTime);
+        } else if value == u32::from_ne_bytes(*b"cept").to_be() {
+            return Ok(Self::ColorEncodingParams);
+        } else if value == u32::from_ne_bytes(*b"rfnm").to_be() {
+            return Ok(Self::ReferenceName);
+        } else if value == u32::from_ne_bytes(*b"csnm").to_be() {
+            return Ok(Self::ColorSpaceName);
         }
         Err(CmsError::UnknownTag(value))
     }
@@ -166,6 +178,9 @@ impl From<Tag> for u32 {
             Tag::CharTarget => u32::from_ne_bytes(*b"targ").to_be(),
             Tag::Technology => u32::from_ne_bytes(*b"tech").to_be(),
             Tag::CalibrationDateTime => u32::from_ne_bytes(*b"calt").to_be(),
+            Tag::ColorEncodingParams => u32::from_ne_bytes(*b"cept").to_be(),
+            Tag::ReferenceName => u32::from_ne_bytes(*b"rfnm").to_be(),
+            Tag::ColorSpaceName => u32::from_ne_bytes(*b"csnm").to_be(),
         }
     }
 }

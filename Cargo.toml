@@ -25,7 +25,20 @@ rand = "0.10.0"
 
 [features]
 # If no unsafe intrinsics active then `forbid(unsafe)` will be used.
-default = ["avx_shaper_paths", "sse_shaper_paths", "neon_shaper_paths", "avx_shaper_fixed_point_paths", "avx_luts", "sse_shaper_fixed_point_paths", "sse_luts", "neon_shaper_fixed_point_paths", "neon_luts", "lut"]
+default = ["avx_shaper_paths", "sse_shaper_paths", "neon_shaper_paths", "avx_shaper_fixed_point_paths", "avx_luts", "sse_shaper_fixed_point_paths", "sse_luts", "neon_shaper_fixed_point_paths", "neon_luts", "lut", "permissive"]
+
+# Accept profiles that lcms2/skcms accept but that are technically non-conformant:
+# - ICC v0 (zero version field) parsed as v2.4
+# - ICC v5 / iccMAX parsed as v4.4 (functional subset)
+# - Lut8/Lut16 with 0- or 1-entry input/output tables (synthesized identity)
+# - mAB/mBA nested curve arrays shorter than the channel count (padded with identity)
+# Disable for strict ICC.1:2010 conformance.
+permissive = []
+
+# Diagnostic: prints file:line for every `InvalidProfile` construction via
+# crate::err::invalid_profile(). Used while investigating unusual profiles.
+# Never enable in release builds — it writes to stderr on every parse error.
+trace-invalid-profile = []
 
 # Enables AVX-512 acceleration where possible. This will work only from 1.89 on stable.
 avx512 = []
