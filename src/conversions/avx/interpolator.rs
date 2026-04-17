@@ -428,7 +428,7 @@ fn tetra_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const B
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorSse {
-        v: unsafe { _mm_loadu_ps(out.as_ptr()) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_ps(&out),
     }
 }
 
@@ -470,7 +470,7 @@ fn pyramid_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorSse {
-        v: unsafe { _mm_loadu_ps(out.as_ptr()) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_ps(&out),
     }
 }
 
@@ -509,7 +509,7 @@ fn prism_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const B
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorSse {
-        v: unsafe { _mm_loadu_ps(out.as_ptr()) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_ps(&out),
     }
 }
 
@@ -547,7 +547,7 @@ fn trilinear_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, con
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorSse {
-        v: unsafe { _mm_loadu_ps(out.as_ptr()) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_ps(&out),
     }
 }
 

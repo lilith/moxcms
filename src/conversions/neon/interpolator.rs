@@ -445,7 +445,7 @@ fn tetra_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVector {
-        v: unsafe { vld1q_f32(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1q_f32(&out),
     }
 }
 
@@ -481,7 +481,7 @@ fn pyramid_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BI
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVector {
-        v: unsafe { vld1q_f32(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1q_f32(&out),
     }
 }
 
@@ -517,7 +517,7 @@ fn prism_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVector {
-        v: unsafe { vld1q_f32(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1q_f32(&out),
     }
 }
 
@@ -553,7 +553,7 @@ fn trilinear_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const 
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVector {
-        v: unsafe { vld1q_f32(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1q_f32(&out),
     }
 }
 

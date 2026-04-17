@@ -401,7 +401,7 @@ fn tetra_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorQ0_15Sse {
-        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_si128(&out),
     }
 }
 
@@ -439,7 +439,7 @@ fn pyramid_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, con
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorQ0_15Sse {
-        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_si128(&out),
     }
 }
 
@@ -477,7 +477,7 @@ fn prism_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorQ0_15Sse {
-        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_si128(&out),
     }
 }
 
@@ -519,7 +519,7 @@ fn trilinear_avx_q0_15_dispatch<
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     AvxVectorQ0_15Sse {
-        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+        v: archmage::intrinsics::x86_64::_mm_loadu_si128(&out),
     }
 }
 

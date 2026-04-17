@@ -1,7 +1,7 @@
 2	src/conversions/avx512/rgb_xyz_opt.rs
 3	src/conversions/avx512/rgb_xyz_q2_13_opt.rs
-29	src/conversions/avx/interpolator_q0_15.rs
-31	src/conversions/avx/interpolator.rs
+25	src/conversions/avx/interpolator_q0_15.rs
+27	src/conversions/avx/interpolator.rs
 1	src/conversions/avx/lut4_to_3_q0_15.rs
 1	src/conversions/avx/lut4_to_3.rs
 2	src/conversions/avx/rgb_xyz_opt.rs
@@ -10,8 +10,8 @@
 1	src/conversions/avx/t_lut3_to_3_q0_15.rs
 1	src/conversions/avx/t_lut3_to_3.rs
 1	src/conversions/interpolator.rs
-28	src/conversions/neon/interpolator_q0_15.rs
-32	src/conversions/neon/interpolator.rs
+24	src/conversions/neon/interpolator_q0_15.rs
+28	src/conversions/neon/interpolator.rs
 1	src/conversions/neon/lut4_to_3_q0_15.rs
 3	src/conversions/neon/lut4_to_3.rs
 1	src/conversions/neon/rgb_xyz_opt.rs

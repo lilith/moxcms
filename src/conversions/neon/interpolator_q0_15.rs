@@ -468,7 +468,7 @@ fn tetra_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, cons
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVectorQ0_15 {
-        v: unsafe { vld1_s16(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1_s16(out.first_chunk::<4>().unwrap()),
     }
 }
 
@@ -506,7 +506,7 @@ fn pyramid_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, co
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVectorQ0_15 {
-        v: unsafe { vld1_s16(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1_s16(out.first_chunk::<4>().unwrap()),
     }
 }
 
@@ -544,7 +544,7 @@ fn prism_neon_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, cons
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVectorQ0_15 {
-        v: unsafe { vld1_s16(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1_s16(out.first_chunk::<4>().unwrap()),
     }
 }
 
@@ -586,7 +586,7 @@ fn trilinear_neon_q0_15_dispatch<
         token, in_r, in_g, in_b, lut, cube, &mut out,
     );
     NeonVectorQ0_15 {
-        v: unsafe { vld1_s16(out.as_ptr()) },
+        v: archmage::intrinsics::aarch64::vld1_s16(out.first_chunk::<4>().unwrap()),
     }
 }
 
