@@ -34,10 +34,15 @@ use crate::{CmsError, Layout, TransformExecutor};
 use num_traits::AsPrimitive;
 use std::arch::x86_64::*;
 
-#[inline(always)]
-pub(crate) unsafe fn _xmm_broadcast_epi32(f: &i32) -> __m128i {
-    let float_ref: &f32 = unsafe { &*(f as *const i32 as *const f32) };
-    unsafe { _mm_castps_si128(_mm_broadcast_ss(float_ref)) }
+#[inline]
+#[target_feature(enable = "avx")]
+pub(crate) fn _xmm_broadcast_epi32(f: &i32) -> __m128i {
+    // Safe bit-reinterpret: lane storage is `i32` but the AVX broadcast
+    // intrinsic wants an `f32`. `f32::from_bits` is a pure bit cast, no
+    // pointer-aliasing dance, no `unsafe`.
+    // Intrinsics inside `#[target_feature]` are safe per Rust 1.87+.
+    let float_val = f32::from_bits(*f as u32);
+    _mm_castps_si128(_mm_broadcast_ss(&float_val))
 }
 
 pub(crate) struct TransformShaperRgbQ2_13OptAvx<
@@ -294,7 +299,7 @@ where
 
     #[cfg(feature = "in_place")]
     #[target_feature(enable = "avx2")]
-    unsafe fn transform_in_place_avx2(&self, in_out: &mut [T]) -> Result<(), CmsError> {
+    fn transform_in_place_avx2(&self, in_out: &mut [T]) -> Result<(), CmsError> {
         let src_cn = Layout::from(SRC_LAYOUT);
         assert_eq!(
             SRC_LAYOUT, DST_LAYOUT,

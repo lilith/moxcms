@@ -37,11 +37,21 @@ use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 
-#[inline(always)]
+#[inline]
 #[allow(dead_code)]
-pub(crate) unsafe fn _xmm_load_epi32(f: &i32) -> __m128i {
-    let float_ref: &f32 = unsafe { &*(f as *const i32 as *const f32) };
-    unsafe { _mm_castps_si128(_mm_load_ss(float_ref)) }
+#[target_feature(enable = "sse4.1")]
+pub(crate) fn _xmm_load_epi32(f: &i32) -> __m128i {
+    // Safe bit-reinterpret: lane storage is `i32` but the SSE load
+    // intrinsic wants an `f32`. `f32::from_bits` is a pure bit cast, no
+    // pointer-aliasing dance, no `unsafe`.
+    // Intrinsics inside `#[target_feature]` are safe per Rust 1.87+.
+    let float_val = f32::from_bits(*f as u32);
+    // `_mm_load_ss` still requires an unsafe block in Rust 1.89 even
+    // inside `#[target_feature]` (it loads from memory via a pointer-ish
+    // signature); the outer-fn `target_feature` lifts the feature
+    // requirement, the inner block narrows to just the pointer-load
+    // concern — no reinterpret casting here any more.
+    unsafe { _mm_castps_si128(_mm_load_ss(&float_val)) }
 }
 
 pub(crate) struct TransformShaperQ2_13OptSse<
@@ -159,7 +169,7 @@ where
 
     #[cfg(feature = "in_place")]
     #[target_feature(enable = "sse4.1")]
-    unsafe fn transform_in_place_impl(&self, in_out: &mut [T]) -> Result<(), CmsError> {
+    fn transform_in_place_impl(&self, in_out: &mut [T]) -> Result<(), CmsError> {
         let src_cn = Layout::from(SRC_LAYOUT);
         let src_channels = src_cn.channels();
 
