@@ -62,6 +62,8 @@ mod sse;
 mod transform_lut3_to_3;
 mod transform_lut3_to_4;
 mod transform_lut4_to_3;
+#[cfg(all(target_arch = "x86_64", feature = "avx"))]
+mod v3_probe;
 mod xyz_lab;
 
 #[cfg(feature = "in_place")]
