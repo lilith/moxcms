@@ -29,6 +29,7 @@
 #![cfg(feature = "avx_luts")]
 use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
 use crate::math::FusedMultiplyAdd;
+use archmage::SimdToken;
 use num_traits::AsPrimitive;
 use std::arch::x86_64::*;
 use std::ops::{Add, Mul, Sub};
@@ -377,13 +378,168 @@ macro_rules! define_interp_avx_d {
     };
 }
 
+// Single-variant AVX Q0.15 interpolators — dispatch through the
+// magetypes Q0.15 probe (`simd_interp_q0_15`). Same `#[arcane]`
+// pattern as the f32 path. `_mm_loadu_si128(out.as_ptr())` matches
+// `AvxVectorQ0_15Sse { v: __m128i }` — the probe's 8-lane i16
+// output (low 4 data + high 4 zero-padded) is equivalent to the
+// hand-written `_mm_loadu_si64(cube_ptr)` load after arithmetic.
+
+#[archmage::arcane]
+fn tetra_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::X64V3Token,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[AvxAlignedI16],
+) -> AvxVectorQ0_15Sse {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_tetra_v3::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    AvxVectorQ0_15Sse {
+        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+    }
+}
+
 #[cfg(feature = "options")]
-define_interp_avx!(TetrahedralAvxQ0_15);
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    AvxMdInterpolationQ0_15<BINS, U> for TetrahedralAvxQ0_15<GRID_SIZE>
+{
+    fn inter3_sse(
+        &self,
+        table: &[AvxAlignedI16],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> AvxVectorQ0_15Sse {
+        let token = archmage::X64V3Token::summon()
+            .expect("TetrahedralAvxQ0_15 dispatched without AVX2+FMA");
+        tetra_avx_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, table)
+    }
+}
+
+#[archmage::arcane]
+fn pyramid_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::X64V3Token,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[AvxAlignedI16],
+) -> AvxVectorQ0_15Sse {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_pyramid_v3::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    AvxVectorQ0_15Sse {
+        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+    }
+}
+
 #[cfg(feature = "options")]
-define_interp_avx!(PyramidalAvxQ0_15);
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    AvxMdInterpolationQ0_15<BINS, U> for PyramidalAvxQ0_15<GRID_SIZE>
+{
+    fn inter3_sse(
+        &self,
+        table: &[AvxAlignedI16],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> AvxVectorQ0_15Sse {
+        let token =
+            archmage::X64V3Token::summon().expect("PyramidalAvxQ0_15 dispatched without AVX2+FMA");
+        pyramid_avx_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, table)
+    }
+}
+
+#[archmage::arcane]
+fn prism_avx_q0_15_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::X64V3Token,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[AvxAlignedI16],
+) -> AvxVectorQ0_15Sse {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_prism_v3::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    AvxVectorQ0_15Sse {
+        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+    }
+}
+
 #[cfg(feature = "options")]
-define_interp_avx!(PrismaticAvxQ0_15);
-define_interp_avx!(TrilinearAvxQ0_15);
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    AvxMdInterpolationQ0_15<BINS, U> for PrismaticAvxQ0_15<GRID_SIZE>
+{
+    fn inter3_sse(
+        &self,
+        table: &[AvxAlignedI16],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> AvxVectorQ0_15Sse {
+        let token =
+            archmage::X64V3Token::summon().expect("PrismaticAvxQ0_15 dispatched without AVX2+FMA");
+        prism_avx_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, table)
+    }
+}
+
+#[archmage::arcane]
+fn trilinear_avx_q0_15_dispatch<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
+    token: archmage::X64V3Token,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<i16>; BINS],
+    table: &[AvxAlignedI16],
+) -> AvxVectorQ0_15Sse {
+    let cube: &[crate::conversions::simd_interp_q0_15::Aligned4I16] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0i16; 8];
+    crate::conversions::simd_interp_q0_15::interpolate_trilinear_v3::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    AvxVectorQ0_15Sse {
+        v: unsafe { _mm_loadu_si128(out.as_ptr() as *const _) },
+    }
+}
+
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>>
+    AvxMdInterpolationQ0_15<BINS, U> for TrilinearAvxQ0_15<GRID_SIZE>
+{
+    fn inter3_sse(
+        &self,
+        table: &[AvxAlignedI16],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<i16>; BINS],
+    ) -> AvxVectorQ0_15Sse {
+        let token =
+            archmage::X64V3Token::summon().expect("TrilinearAvxQ0_15 dispatched without AVX2+FMA");
+        trilinear_avx_q0_15_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, table)
+    }
+}
+
 #[cfg(feature = "options")]
 define_interp_avx_d!(PrismaticAvxQ0_15Double);
 #[cfg(feature = "options")]

@@ -1,6 +1,6 @@
 2	src/conversions/avx512/rgb_xyz_opt.rs
 3	src/conversions/avx512/rgb_xyz_q2_13_opt.rs
-21	src/conversions/avx/interpolator_q0_15.rs
+29	src/conversions/avx/interpolator_q0_15.rs
 31	src/conversions/avx/interpolator.rs
 1	src/conversions/avx/lut4_to_3_q0_15.rs
 1	src/conversions/avx/lut4_to_3.rs
