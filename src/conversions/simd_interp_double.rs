@@ -47,6 +47,13 @@ pub(crate) fn interpolate_tetra_double<
 
     let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
 
+    // Bounds-hoist — see `simd_interp.rs::interpolate_tetra`.
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
+
     let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
@@ -124,6 +131,12 @@ pub(crate) fn interpolate_trilinear_double<
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
+
     let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
@@ -181,6 +194,12 @@ pub(crate) fn interpolate_pyramid_double<
     type f32x8 = GenericF32x8<Token>;
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
 
     let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
@@ -262,6 +281,12 @@ pub(crate) fn interpolate_prism_double<
     type f32x8 = GenericF32x8<Token>;
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
 
     let fetch = |x: i32, y: i32, z: i32| -> f32x8 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
