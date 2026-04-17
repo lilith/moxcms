@@ -36,7 +36,11 @@ pub(crate) struct Aligned4<T>(pub(crate) [T; 4]);
 /// to the hand-written `TetrahedralSse::interpolate` — only the types
 /// differ.
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_tetra<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_tetra<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
@@ -113,7 +117,11 @@ fn interpolate_tetra<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: 
 /// the weight order — always fetches the eight cube corners and weights
 /// by `(1-dr, dr) × (1-dg, dg) × (1-db, db)`.
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_trilinear<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_trilinear<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
@@ -174,7 +182,11 @@ fn interpolate_trilinear<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BI
 /// cannot represent.
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_pyramid<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_pyramid<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
@@ -254,7 +266,11 @@ fn interpolate_pyramid<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS
 /// the weights to recover the two saddle surfaces.
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
-fn interpolate_prism<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_prism<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,

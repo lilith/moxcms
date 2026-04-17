@@ -29,6 +29,7 @@
 #![cfg(feature = "avx_luts")]
 use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
 use crate::math::{FusedMultiplyAdd, FusedMultiplyNegAdd};
+use archmage::SimdToken;
 use num_traits::AsPrimitive;
 use std::arch::x86_64::*;
 use std::ops::{Add, Mul, Sub};
@@ -393,8 +394,65 @@ macro_rules! define_interp_avx_d {
     };
 }
 
+// `TetrahedralAvxFma` now dispatches to the generic magetypes probe
+// (`simd_interp::interpolate_tetra_v3`) instead of the hand-written
+// `TetrahedralAvxFma::interpolate` below. The hand-written fn is
+// left in place for codegen comparison + rollback; it becomes dead
+// code when this probe integration is active.
+//
+// The trait method can't be `#[target_feature]` (E0053). To keep the
+// probe call inlineable — so LLVM can fuse the stack round-trip
+// (`.store(out)` in the probe + `_mm_loadu_ps(out)` in the adapter)
+// back into a register-to-register flow — we route through an outer
+// `#[target_feature(enable="avx2,fma")]` helper fn. Inside that
+// region, the probe call inlines and the round-trip evaporates.
 #[cfg(feature = "options")]
-define_interp_avx!(TetrahedralAvxFma);
+#[archmage::arcane]
+fn tetra_avx_fma_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::X64V3Token,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<f32>; BINS],
+    table: &[SseAlignedF32],
+) -> AvxVectorSse {
+    // SseAlignedF32 and `simd_interp::Aligned4<f32>` are both
+    // `#[repr(align(16), C)]` wrappers of `[f32; 4]` — identical
+    // ABI layout, same alignment, same size. The slice cast is a
+    // pure reinterpret.
+    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+
+    let mut out = [0f32; 4];
+    crate::conversions::simd_interp::interpolate_tetra_v3::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    AvxVectorSse {
+        v: unsafe { _mm_loadu_ps(out.as_ptr()) },
+    }
+}
+
+#[cfg(feature = "options")]
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>> AvxMdInterpolation<BINS, U>
+    for TetrahedralAvxFma<GRID_SIZE>
+{
+    fn inter3_sse(
+        &self,
+        table: &[SseAlignedF32],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<f32>; BINS],
+    ) -> AvxVectorSse {
+        // X64V3 runtime gate is cheap (relaxed atomic load + branch
+        // predicted perfectly in hot loops). `.expect()` is fine
+        // because the dispatch invariant that brought us here already
+        // proved AVX2+FMA is present.
+        let token =
+            archmage::X64V3Token::summon().expect("TetrahedralAvxFma dispatched without AVX2+FMA");
+        tetra_avx_fma_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, table)
+    }
+}
 #[cfg(feature = "options")]
 define_interp_avx!(PyramidalAvxFma);
 #[cfg(feature = "options")]
