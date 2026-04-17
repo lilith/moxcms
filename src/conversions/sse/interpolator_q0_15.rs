@@ -141,7 +141,7 @@ pub(crate) trait SseMdInterpolationQ0_15<const BINS: usize, U: AsPrimitive<usize
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> TetrahedralSseQ0_15<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
+    fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
         in_r: U,
         in_g: U,
@@ -233,7 +233,7 @@ define_inter_sse!(TrilinearSseQ0_15);
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PyramidalSseQ0_15<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
+    fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
         in_r: U,
         in_g: U,
@@ -297,7 +297,7 @@ impl<const GRID_SIZE: usize> PyramidalSseQ0_15<GRID_SIZE> {
 #[cfg(feature = "options")]
 impl<const GRID_SIZE: usize> PrismaticSseQ0_15<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
+    fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
         in_r: U,
         in_g: U,
@@ -351,7 +351,7 @@ impl<const GRID_SIZE: usize> PrismaticSseQ0_15<GRID_SIZE> {
 
 impl<const GRID_SIZE: usize> TrilinearSseQ0_15<GRID_SIZE> {
     #[target_feature(enable = "sse4.1")]
-    unsafe fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
+    fn interpolate<U: AsPrimitive<usize>, const BINS: usize>(
         &self,
         in_r: U,
         in_g: U,
