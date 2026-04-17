@@ -73,12 +73,30 @@ jobs:
         env:
           CARGO_INCREMENTAL: 0
 
-      - name: Upload criterion results
+      - name: cargo bench transforms (zenbench)
+        # The moxcms crate's own bench lives at benches/transforms.rs and
+        # uses zenbench. Emits paired-stat MD + JSON into benchmarks/ so
+        # a reviewer can compare the new platform's numbers against the
+        # committed linux-x86_64 baseline.
+        shell: bash
+        run: |
+          set -eu
+          cargo bench --bench transforms --features options --no-run
+          bin=$(find target/release/deps -maxdepth 1 -type f -name 'transforms-*' ! -name '*.d' | head -1)
+          date=$(date -u +%Y-%m-%d)
+          mkdir -p benchmarks
+          "$bin" --format=md   > "benchmarks/transforms_${{ matrix.platform }}_${date}.md"
+          "$bin" --format=json > "benchmarks/transforms_${{ matrix.platform }}_${date}.json"
+
+      - name: Upload bench results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: criterion-${{ matrix.platform }}
-          path: target/criterion
+          name: bench-${{ matrix.platform }}
+          path: |
+            target/criterion
+            benchmarks/transforms_${{ matrix.platform }}_*.md
+            benchmarks/transforms_${{ matrix.platform }}_*.json
           if-no-files-found: warn
 
       - name: Print summary

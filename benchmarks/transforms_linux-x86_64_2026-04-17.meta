@@ -1,0 +1,15 @@
+# moxcms bench baseline
+commit: 97d44665ef75582f83604a3115b8b30a70aaf23f
+branch: asm-audit-gate
+platform: linux-x86_64
+host: Linux lilith 6.6.87.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun  5 18:30:46 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+cpu: AMD Ryzen 9 7950X 16-Core Processor
+rustc: rustc 1.94.1 (e408947bf 2026-03-25)
+command: target/release/deps/transforms-HASH --format=md
+date: 2026-04-17T00:37:24Z
+notes: |
+  Initial zenbench baseline on lilith's primary workstation. Pinned
+  before any Section 2 (drop unsafe fn interpolate) or Section 3 (safe
+  intrinsic codegen) safety work so subsequent changes can be compared
+  head-to-head on the same hardware. 8-core Ryzen 9 7950X, water-cooled,
+  no thermal throttling. N_PIXELS=1024 per transform call.
