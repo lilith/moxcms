@@ -132,21 +132,51 @@ This is the blocker for deleting the shared `AvxVector*Sse` /
 `NeonVector*` arithmetic impls (~16 `unsafe` tokens each across the
 AVX/NEON files).
 
-**Upstream fix:** add `f32x8::from_halves(lo: f32x4<T>, hi: f32x4<T>)
--> f32x8<T>` to `magetypes::simd::generic::f32x8`. Same for
-`i16x16::from_halves(lo: i16x8<T>, hi: i16x8<T>)`.
+**Upstream fix:** add a `from_halves` construction method to the
+wider generic types, token-gated like every other construction
+path on `GenericF32x8<T>` / `GenericI16x16<T>`:
 
-- On V3: `_mm256_insertf128_ps(_mm256_castps128_ps256(lo), hi, 1)`
-- On NEON: construct the `[float32x4_t; 2]` Repr directly (it's
-  already the Repr — this should be a zero-cost construction)
-- On Wasm128: not applicable since there's no 256-bit wasm tier
-  (f32x8 on wasm is two f32x4s polyfilled — same as NEON)
-- On Scalar: `[..lo_array, ..hi_array]`
+```rust
+impl<T: F32x8Backend> f32x8<T> {
+    #[inline(always)]
+    pub fn from_halves(token: T, lo: f32x4<T::Half>, hi: f32x4<T::Half>) -> Self
+    where
+        T: F32x4BackendHalf,  // associated half-width backend
+    { … }
+}
+```
+
+Or, more directly (token as safety witness, halves as same backend):
+
+```rust
+impl<T: F32x8Backend + F32x4Backend> f32x8<T> {
+    #[inline(always)]
+    pub fn from_halves(token: T, lo: f32x4<T>, hi: f32x4<T>) -> Self { … }
+}
+```
+
+Per-tier lowering:
+
+- `X64V3Token`: `_mm256_insertf128_ps(_mm256_castps128_ps256(lo_repr), hi_repr, 1)`
+- `NeonToken`: construct the `[float32x4_t; 2]` Repr directly
+  from `(lo_repr, hi_repr)` — zero-cost because Repr *is* the pair
+- `Wasm128Token`: same — `f32x8<Wasm128Token>` polyfills to
+  `[v128; 2]`, `from_halves` is `[lo_repr, hi_repr]`
+- `ScalarToken`: `[..lo_array, ..hi_array]` — 8-element i / f array
+
+The token parameter isn't used for safety — all the SIMD feature
+bits are already in `T` — but it matches the construction-gated
+pattern of the rest of the API. `splat`, `load`, `zero`,
+`from_array` all take a token as a presence witness; `from_halves`
+should match.
+
+Same shape for `i16x16::from_halves(token: T, lo: i16x8<T>,
+hi: i16x8<T>)`, `i32x8::from_halves`, etc.
 
 With this primitive, a single `interpolate_*_dual_cube` probe fn
 can fetch from two 4-wide cubes and pack into `f32x8` per-access.
 The Double variants migrate cleanly and the ~16 shared `unsafe`
-tokens come out.
+tokens in moxcms come out.
 
 **Priority:** **High.** This is the largest remaining piece to
 net the moxcms `unsafe` reduction.
