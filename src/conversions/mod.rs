@@ -84,6 +84,15 @@ mod simd_interp_double;
     feature = "lut"
 ))]
 mod simd_interp_q0_15;
+#[cfg(all(
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "wasm32"
+    ),
+    feature = "lut"
+))]
+mod simd_interp_q0_15_double;
 #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "sse"))]
 mod sse;
 mod transform_lut3_to_3;
