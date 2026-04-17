@@ -41,11 +41,30 @@ source fn doesn't propagate through the arcane-generated wrapper.
 **Workaround attempts:**
   * Added `#[inline(always)]` on the `#[arcane]`-attributed source
     fn — no effect (macro emits its own `#[inline]` on the inner).
+  * Replaced `#[arcane]` with plain `#[inline(always)]` + an
+    `unsafe { probe_v3(…) }` call — my dispatch helper inlined
+    into the trait impl (no more `__arcane_*_dispatch` symbol),
+    but **the probe's inner tf fn still became the call
+    boundary** (`#[magetypes]` emits `#[inline]`, not
+    `#[inline(always)]`, on its inner tf fn). Same bench numbers
+    as the `#[arcane]` version — ±1% noise. Reverted because it
+    adds +1 unsafe block for no perf win.
   * Removed the bounds-hoist asserts (−0.5% — within noise, so not
     the cost).
   * Pass the output via `&mut [f32; 4]` + `_mm_loadu_ps(&out)`
     round-trip — already in the code; confirmed that LLVM does fuse
     the round-trip within the tf region.
+
+**What actually works** (per archmage's design):
+  * `#[rite]` helper fns inline into `#[arcane]` callers — but the
+    trait method can't be `#[arcane]` (E0053 on tf attribute), and
+    lifting the `#[arcane]` upward means dispatch-up (see below).
+  * Plain `#[inline(always)]` fns inline into `#[arcane]` callers.
+    Same constraint.
+
+So the tf boundary is the real cost, and it only disappears when
+the *caller* is a tf region. Getting there from a trait method
+requires restructuring the dispatch.
 
 **Architectural fix:** move dispatch up from the `inter3_sse`
 trait method to `transform_chunk` (or higher):
@@ -64,11 +83,30 @@ Requires changes to `src/conversions/transform_lut3_to_3.rs`,
 `transform_lut3_to_4.rs`, `transform_lut4_to_3.rs` (the chunk
 dispatchers) plus the trait definitions themselves.
 
-**Upstream fix:** stabilize
-`#![feature(target_feature_inline_always)]` — then `#[arcane]`
-can emit `#[inline(always)]` on its inner fn and LLVM inlines
-the body across the tf boundary without a separate symbol. Until
-then, the dispatch-up refactor is the pragmatic path.
+**Upstream fix options:**
+  (a) Stabilize `#![feature(target_feature_inline_always)]` —
+      then `#[arcane]` and `#[magetypes]` can emit
+      `#[inline(always)]` on their inner tf fns and LLVM inlines
+      the body across the tf boundary without a separate symbol.
+      This is the true fix; everything else is a workaround.
+  (b) Add an `inline_always` option to `#[magetypes]` matching
+      the one `#[arcane]` already has — gated on the nightly
+      feature. Users opt in when they accept the nightly
+      constraint.
+  (c) Add a knob to `#[magetypes]` that emits `#[rite]`-style
+      inner fns (which already carry `#[inline(always)]` via
+      archmage's handling) instead of the standard inner tf fn.
+      Same effect on stable: helper is small + inline-always, and
+      inlines into `#[arcane]` callers (which our trait impl
+      isn't, but see option d).
+  (d) Document the "dispatch-up" pattern as the canonical
+      moxcms-shape workaround on stable Rust — hoist `#[arcane]`
+      above the pixel loop so the loop itself is inside a tf
+      region and every interpolator call inlines.
+
+Option (a) is the true fix. (b) + (c) are mitigations. (d) is our
+immediate path — requires changing transform_chunk dispatchers +
+trait definitions, but doesn't need upstream or nightly.
 
 **Priority:** High — this is the root cause of the moxcms
 `rgb_lut_to_srgb` 30% regression. Fixable on our end (dispatch-
