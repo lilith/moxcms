@@ -387,6 +387,371 @@ mod tests {
     use crate::conversions::interpolator::BarycentricWeight;
     use archmage::incant;
 
+    /// Scalar reference for `_mm_mulhrs_epi16` — bit-exact by spec:
+    /// result = ((a * b + 0x4000) >> 15) as i16, saturating only at the
+    /// single edge case (-32768 * -32768).
+    #[inline(always)]
+    fn mulhrs_ref(a: i16, b: i16) -> i16 {
+        let prod = (a as i32) * (b as i32);
+        ((prod + 0x4000) >> 15) as i16
+    }
+
+    /// Scalar reference tetrahedral interpolator against which the
+    /// magetypes probe is compared. Ground truth for the Q0.15 mulhrs
+    /// semantics — must match the probe bit-exactly.
+    fn scalar_tetra_q15<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<i16>; 256],
+        cube: &[Aligned4I16],
+    ) -> [i16; 4] {
+        let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [i16; 4] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let sub = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
+            // Wrapping — matches `_mm_sub_epi16`.
+            [
+                a[0].wrapping_sub(b[0]),
+                a[1].wrapping_sub(b[1]),
+                a[2].wrapping_sub(b[2]),
+                a[3].wrapping_sub(b[3]),
+            ]
+        };
+        let mla = |acc: [i16; 4], a: [i16; 4], k: i16| -> [i16; 4] {
+            [
+                acc[0].wrapping_add(mulhrs_ref(a[0], k)),
+                acc[1].wrapping_add(mulhrs_ref(a[1], k)),
+                acc[2].wrapping_add(mulhrs_ref(a[2], k)),
+                acc[3].wrapping_add(mulhrs_ref(a[3], k)),
+            ]
+        };
+        let c0 = fetch(x, y, z);
+        let (c1, c2, c3) = if rx >= ry {
+            if ry >= rz {
+                (
+                    sub(fetch(x_n, y, z), c0),
+                    sub(fetch(x_n, y_n, z), fetch(x_n, y, z)),
+                    sub(fetch(x_n, y_n, z_n), fetch(x_n, y_n, z)),
+                )
+            } else if rx >= rz {
+                (
+                    sub(fetch(x_n, y, z), c0),
+                    sub(fetch(x_n, y_n, z_n), fetch(x_n, y, z_n)),
+                    sub(fetch(x_n, y, z_n), fetch(x_n, y, z)),
+                )
+            } else {
+                (
+                    sub(fetch(x_n, y, z_n), fetch(x, y, z_n)),
+                    sub(fetch(x_n, y_n, z_n), fetch(x_n, y, z_n)),
+                    sub(fetch(x, y, z_n), c0),
+                )
+            }
+        } else if rx >= rz {
+            (
+                sub(fetch(x_n, y_n, z), fetch(x, y_n, z)),
+                sub(fetch(x, y_n, z), c0),
+                sub(fetch(x_n, y_n, z_n), fetch(x_n, y_n, z)),
+            )
+        } else if ry >= rz {
+            (
+                sub(fetch(x_n, y_n, z_n), fetch(x, y_n, z_n)),
+                sub(fetch(x, y_n, z), c0),
+                sub(fetch(x, y_n, z_n), fetch(x, y_n, z)),
+            )
+        } else {
+            (
+                sub(fetch(x_n, y_n, z_n), fetch(x, y_n, z_n)),
+                sub(fetch(x, y_n, z_n), fetch(x, y, z_n)),
+                sub(fetch(x, y, z_n), c0),
+            )
+        };
+        let s0 = mla(c0, c1, rx);
+        let s1 = mla(s0, c2, ry);
+        mla(s1, c3, rz)
+    }
+
+    fn random_cube_q15<const GRID_SIZE: usize>(seed: u32) -> Vec<Aligned4I16> {
+        (0..GRID_SIZE.pow(3))
+            .map(|i| {
+                let k = (i as u32).wrapping_mul(0x9E37_79B1).wrapping_add(seed);
+                let b16 = |shift: u32| -> i16 {
+                    // Small range so wrapping_sub in the reference
+                    // matches the probe's subtraction behavior.
+                    (k.rotate_left(shift) & 0x3FFF) as i16
+                };
+                Aligned4I16([b16(0), b16(7), b16(13), b16(19)])
+            })
+            .collect()
+    }
+
+    fn random_weights_q15<const GRID_SIZE: usize>(seed: u32) -> Box<[BarycentricWeight<i16>; 256]> {
+        let mut w = Box::new([BarycentricWeight::<i16>::default(); 256]);
+        for (i, entry) in w.iter_mut().enumerate() {
+            let k = (i as u32).wrapping_mul(0xB503_2B33).wrapping_add(seed);
+            let x = ((k & 0xFFFF) as usize % GRID_SIZE.max(2)) as i32;
+            entry.x = x.min(GRID_SIZE as i32 - 1);
+            entry.x_n = (entry.x + 1).min(GRID_SIZE as i32 - 1);
+            entry.w = ((k >> 16) & 0x7FFF) as i16; // [0, 0x7FFF]
+        }
+        w
+    }
+
+    const EQUIV_INPUTS_Q15: &[(u8, u8, u8)] = &[
+        (0, 0, 0),
+        (255, 255, 255),
+        (128, 64, 200),
+        (1, 254, 128),
+        (80, 80, 80),
+        (200, 100, 50),
+        (10, 200, 100),
+        (33, 77, 222),
+    ];
+
+    fn scalar_trilinear_q15<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<i16>; 256],
+        cube: &[Aligned4I16],
+    ) -> [i16; 4] {
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [i16; 4] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let sub = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
+            [
+                a[0].wrapping_sub(b[0]),
+                a[1].wrapping_sub(b[1]),
+                a[2].wrapping_sub(b[2]),
+                a[3].wrapping_sub(b[3]),
+            ]
+        };
+        let mla = |acc: [i16; 4], a: [i16; 4], k: i16| -> [i16; 4] {
+            [
+                acc[0].wrapping_add(mulhrs_ref(a[0], k)),
+                acc[1].wrapping_add(mulhrs_ref(a[1], k)),
+                acc[2].wrapping_add(mulhrs_ref(a[2], k)),
+                acc[3].wrapping_add(mulhrs_ref(a[3], k)),
+            ]
+        };
+        // Mirror the probe's trilinear structure: c = a + mulhrs(b - a, t)
+        let lerp = |a: [i16; 4], b: [i16; 4], t: i16| -> [i16; 4] { mla(a, sub(b, a), t) };
+        let c000 = fetch(x, y, z);
+        let c100 = fetch(x_n, y, z);
+        let c010 = fetch(x, y_n, z);
+        let c110 = fetch(x_n, y_n, z);
+        let c001 = fetch(x, y, z_n);
+        let c101 = fetch(x_n, y, z_n);
+        let c011 = fetch(x, y_n, z_n);
+        let c111 = fetch(x_n, y_n, z_n);
+        let c00 = lerp(c000, c100, dr);
+        let c10 = lerp(c010, c110, dr);
+        let c01 = lerp(c001, c101, dr);
+        let c11 = lerp(c011, c111, dr);
+        let c0 = lerp(c00, c10, dg);
+        let c1 = lerp(c01, c11, dg);
+        lerp(c0, c1, db)
+    }
+
+    fn scalar_pyramid_q15<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<i16>; 256],
+        cube: &[Aligned4I16],
+    ) -> [i16; 4] {
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [i16; 4] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let sub = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
+            [
+                a[0].wrapping_sub(b[0]),
+                a[1].wrapping_sub(b[1]),
+                a[2].wrapping_sub(b[2]),
+                a[3].wrapping_sub(b[3]),
+            ]
+        };
+        let mla = |acc: [i16; 4], a: [i16; 4], k: i16| -> [i16; 4] {
+            [
+                acc[0].wrapping_add(mulhrs_ref(a[0], k)),
+                acc[1].wrapping_add(mulhrs_ref(a[1], k)),
+                acc[2].wrapping_add(mulhrs_ref(a[2], k)),
+                acc[3].wrapping_add(mulhrs_ref(a[3], k)),
+            ]
+        };
+        let c0 = fetch(x, y, z);
+        let (c1, c2, c3) = if dr > db && dg > db {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x_n, y_n, z);
+            let x2 = fetch(x_n, y, z);
+            let x3 = fetch(x, y_n, z);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        } else if db > dr && dg > dr {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x, y_n, z_n);
+            let x2 = fetch(x, y_n, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        } else {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x_n, y, z_n);
+            let x2 = fetch(x_n, y, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        };
+        let s0 = mla(c0, c1, dr);
+        let s1 = mla(s0, c2, dg);
+        mla(s1, c3, db)
+    }
+
+    fn scalar_prism_q15<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<i16>; 256],
+        cube: &[Aligned4I16],
+    ) -> [i16; 4] {
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [i16; 4] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let sub = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
+            [
+                a[0].wrapping_sub(b[0]),
+                a[1].wrapping_sub(b[1]),
+                a[2].wrapping_sub(b[2]),
+                a[3].wrapping_sub(b[3]),
+            ]
+        };
+        let mla = |acc: [i16; 4], a: [i16; 4], k: i16| -> [i16; 4] {
+            [
+                acc[0].wrapping_add(mulhrs_ref(a[0], k)),
+                acc[1].wrapping_add(mulhrs_ref(a[1], k)),
+                acc[2].wrapping_add(mulhrs_ref(a[2], k)),
+                acc[3].wrapping_add(mulhrs_ref(a[3], k)),
+            ]
+        };
+        let c0 = fetch(x, y, z);
+        let (c1, c2, c3) = if dr > dg {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x_n, y, z_n);
+            let x2 = fetch(x_n, y, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        } else {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x, y_n, z_n);
+            let x2 = fetch(x, y_n, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        };
+        let s0 = mla(c0, c1, dr);
+        let s1 = mla(s0, c2, dg);
+        mla(s1, c3, db)
+    }
+
+    fn assert_q15_bitexact(got: [i16; 8], expect: [i16; 4], ctx: &str) {
+        let got4 = [got[0], got[1], got[2], got[3]];
+        assert_eq!(
+            got4, expect,
+            "{ctx} low half: got={got4:?} expect={expect:?}"
+        );
+        assert_eq!(
+            [got[4], got[5], got[6], got[7]],
+            [0, 0, 0, 0],
+            "{ctx} high half should remain zero-padded"
+        );
+    }
+
+    #[test]
+    fn tetra_q0_15_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_q15::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_q15::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_Q15 {
+            let expect = scalar_tetra_q15::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0i16; 8];
+            incant!(
+                interpolate_tetra::<u8, GRID_SIZE, 256>(ir, ig, ib, &*weights, &cube, &mut got,),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_q15_bitexact(got, expect, &format!("tetra_q0_15 (r={ir},g={ig},b={ib})"));
+        }
+    }
+
+    #[test]
+    fn trilinear_q0_15_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_q15::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_q15::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_Q15 {
+            let expect = scalar_trilinear_q15::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0i16; 8];
+            incant!(
+                interpolate_trilinear::<u8, GRID_SIZE, 256>(ir, ig, ib, &*weights, &cube, &mut got,),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_q15_bitexact(
+                got,
+                expect,
+                &format!("trilinear_q0_15 (r={ir},g={ig},b={ib})"),
+            );
+        }
+    }
+
+    #[cfg(feature = "options")]
+    #[test]
+    fn pyramid_q0_15_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_q15::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_q15::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_Q15 {
+            let expect = scalar_pyramid_q15::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0i16; 8];
+            incant!(
+                interpolate_pyramid::<u8, GRID_SIZE, 256>(ir, ig, ib, &*weights, &cube, &mut got,),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_q15_bitexact(
+                got,
+                expect,
+                &format!("pyramid_q0_15 (r={ir},g={ig},b={ib})"),
+            );
+        }
+    }
+
+    #[cfg(feature = "options")]
+    #[test]
+    fn prism_q0_15_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_q15::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_q15::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_Q15 {
+            let expect = scalar_prism_q15::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0i16; 8];
+            incant!(
+                interpolate_prism::<u8, GRID_SIZE, 256>(ir, ig, ib, &*weights, &cube, &mut got,),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_q15_bitexact(got, expect, &format!("prism_q0_15 (r={ir},g={ig},b={ib})"));
+        }
+    }
+
     fn make_identity_ramp<const BINS: usize, const GRID_SIZE: usize>()
     -> Box<[BarycentricWeight<i16>; BINS]> {
         let mut w = Box::new([BarycentricWeight::<i16>::default(); BINS]);

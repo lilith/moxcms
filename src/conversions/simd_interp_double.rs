@@ -295,6 +295,356 @@ mod tests {
             .collect()
     }
 
+    /// Scalar reference for the 8-lane Double variant — identical
+    /// algorithm to the probe, expressed on `[f32; 8]`. Two adjacent
+    /// 4-channel pixels packed per call; `[0..4]` is pixel 0, `[4..8]`
+    /// is pixel 1, and they are independent along the cube axis.
+    fn scalar_tetra_double_ref<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<f32>; 256],
+        cube: &[Aligned8<f32>],
+    ) -> [f32; 8] {
+        let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [f32; 8] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let sub = |a: [f32; 8], b: [f32; 8]| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i] - b[i];
+            }
+            r
+        };
+        let mla = |acc: [f32; 8], a: [f32; 8], k: f32| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i].mul_add(k, acc[i]);
+            }
+            r
+        };
+        let c0 = fetch(x, y, z);
+        let (c1, c2, c3) = if rx >= ry {
+            if ry >= rz {
+                (
+                    sub(fetch(x_n, y, z), c0),
+                    sub(fetch(x_n, y_n, z), fetch(x_n, y, z)),
+                    sub(fetch(x_n, y_n, z_n), fetch(x_n, y_n, z)),
+                )
+            } else if rx >= rz {
+                (
+                    sub(fetch(x_n, y, z), c0),
+                    sub(fetch(x_n, y_n, z_n), fetch(x_n, y, z_n)),
+                    sub(fetch(x_n, y, z_n), fetch(x_n, y, z)),
+                )
+            } else {
+                (
+                    sub(fetch(x_n, y, z_n), fetch(x, y, z_n)),
+                    sub(fetch(x_n, y_n, z_n), fetch(x_n, y, z_n)),
+                    sub(fetch(x, y, z_n), c0),
+                )
+            }
+        } else if rx >= rz {
+            (
+                sub(fetch(x_n, y_n, z), fetch(x, y_n, z)),
+                sub(fetch(x, y_n, z), c0),
+                sub(fetch(x_n, y_n, z_n), fetch(x_n, y_n, z)),
+            )
+        } else if ry >= rz {
+            (
+                sub(fetch(x_n, y_n, z_n), fetch(x, y_n, z_n)),
+                sub(fetch(x, y_n, z), c0),
+                sub(fetch(x, y_n, z_n), fetch(x, y_n, z)),
+            )
+        } else {
+            (
+                sub(fetch(x_n, y_n, z_n), fetch(x, y_n, z_n)),
+                sub(fetch(x, y_n, z_n), fetch(x, y, z_n)),
+                sub(fetch(x, y, z_n), c0),
+            )
+        };
+        let s0 = mla(c0, c1, rx);
+        let s1 = mla(s0, c2, ry);
+        mla(s1, c3, rz)
+    }
+
+    fn random_cube_double<const GRID_SIZE: usize>(seed: u32) -> Vec<Aligned8<f32>> {
+        (0..GRID_SIZE.pow(3))
+            .map(|i| {
+                let k = (i as u32).wrapping_mul(0x9E37_79B1).wrapping_add(seed);
+                let kf = |shift: u32| -> f32 {
+                    let bits = k.rotate_left(shift) & 0x7FFF_FFFF;
+                    bits as f32 / 0x4000_0000u32 as f32
+                };
+                Aligned8([kf(0), kf(5), kf(11), kf(17), kf(23), kf(2), kf(29), kf(3)])
+            })
+            .collect()
+    }
+
+    fn random_weights_double<const GRID_SIZE: usize>(
+        seed: u32,
+    ) -> Box<[BarycentricWeight<f32>; 256]> {
+        let mut w = Box::new([BarycentricWeight::<f32>::default(); 256]);
+        for (i, entry) in w.iter_mut().enumerate() {
+            let k = (i as u32).wrapping_mul(0xB503_2B33).wrapping_add(seed);
+            let x = ((k & 0xFFFF) as usize % GRID_SIZE.max(2)) as i32;
+            entry.x = x.min(GRID_SIZE as i32 - 1);
+            entry.x_n = (entry.x + 1).min(GRID_SIZE as i32 - 1);
+            let bits = (k >> 16) & 0x7FFF_FFFF;
+            entry.w = bits as f32 / 0x8000_0000u32 as f32;
+        }
+        w
+    }
+
+    const EQUIV_INPUTS_DOUBLE: &[(u8, u8, u8)] = &[
+        (0, 0, 0),
+        (255, 255, 255),
+        (128, 64, 200),
+        (1, 254, 128),
+        (80, 80, 80),
+        (200, 100, 50),
+        (10, 200, 100),
+        (33, 77, 222),
+    ];
+
+    fn assert_f32x8_close(got: [f32; 8], expect: [f32; 8], ctx: &str) {
+        for lane in 0..8 {
+            let diff = (got[lane] - expect[lane]).abs();
+            assert!(
+                diff < 1e-5,
+                "{ctx} lane {lane}: got={} expect={} diff={}",
+                got[lane],
+                expect[lane],
+                diff
+            );
+        }
+    }
+
+    fn scalar_trilinear_double_ref<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<f32>; 256],
+        cube: &[Aligned8<f32>],
+    ) -> [f32; 8] {
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [f32; 8] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let lerp = |a: [f32; 8], b: [f32; 8], t: f32| -> [f32; 8] {
+            let it = 1.0 - t;
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = b[i].mul_add(t, a[i] * it);
+            }
+            r
+        };
+        let c000 = fetch(x, y, z);
+        let c100 = fetch(x_n, y, z);
+        let c010 = fetch(x, y_n, z);
+        let c110 = fetch(x_n, y_n, z);
+        let c001 = fetch(x, y, z_n);
+        let c101 = fetch(x_n, y, z_n);
+        let c011 = fetch(x, y_n, z_n);
+        let c111 = fetch(x_n, y_n, z_n);
+        let c00 = lerp(c000, c100, dr);
+        let c10 = lerp(c010, c110, dr);
+        let c01 = lerp(c001, c101, dr);
+        let c11 = lerp(c011, c111, dr);
+        let c0 = lerp(c00, c10, dg);
+        let c1 = lerp(c01, c11, dg);
+        lerp(c0, c1, db)
+    }
+
+    fn scalar_pyramid_double_ref<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<f32>; 256],
+        cube: &[Aligned8<f32>],
+    ) -> [f32; 8] {
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [f32; 8] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let sub = |a: [f32; 8], b: [f32; 8]| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i] - b[i];
+            }
+            r
+        };
+        let mla = |acc: [f32; 8], a: [f32; 8], k: f32| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i].mul_add(k, acc[i]);
+            }
+            r
+        };
+        let c0 = fetch(x, y, z);
+        let (c1, c2, c3) = if dr > db && dg > db {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x_n, y_n, z);
+            let x2 = fetch(x_n, y, z);
+            let x3 = fetch(x, y_n, z);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        } else if db > dr && dg > dr {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x, y_n, z_n);
+            let x2 = fetch(x, y_n, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        } else {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x_n, y, z_n);
+            let x2 = fetch(x_n, y, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        };
+        let s0 = mla(c0, c1, dr);
+        let s1 = mla(s0, c2, dg);
+        mla(s1, c3, db)
+    }
+
+    fn scalar_prism_double_ref<const GRID_SIZE: usize>(
+        in_r: u8,
+        in_g: u8,
+        in_b: u8,
+        lut: &[BarycentricWeight<f32>; 256],
+        cube: &[Aligned8<f32>],
+    ) -> [f32; 8] {
+        let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+        let fetch = |x: i32, y: i32, z: i32| -> [f32; 8] {
+            let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
+                + y as u32 * GRID_SIZE as u32
+                + z as u32) as usize;
+            cube[offset].0
+        };
+        let sub = |a: [f32; 8], b: [f32; 8]| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i] - b[i];
+            }
+            r
+        };
+        let mla = |acc: [f32; 8], a: [f32; 8], k: f32| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i].mul_add(k, acc[i]);
+            }
+            r
+        };
+        let c0 = fetch(x, y, z);
+        let (c1, c2, c3) = if dr > dg {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x_n, y, z_n);
+            let x2 = fetch(x_n, y, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        } else {
+            let x0 = fetch(x_n, y_n, z_n);
+            let x1 = fetch(x, y_n, z_n);
+            let x2 = fetch(x, y_n, z);
+            let x3 = fetch(x, y, z_n);
+            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+        };
+        let s0 = mla(c0, c1, dr);
+        let s1 = mla(s0, c2, dg);
+        mla(s1, c3, db)
+    }
+
+    #[test]
+    fn tetra_double_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_double::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_double::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_DOUBLE {
+            let expect = scalar_tetra_double_ref::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0f32; 8];
+            incant!(
+                interpolate_tetra_double::<u8, GRID_SIZE, 256>(
+                    ir, ig, ib, &*weights, &cube, &mut got,
+                ),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_f32x8_close(got, expect, &format!("tetra_double (r={ir},g={ig},b={ib})"));
+        }
+    }
+
+    #[test]
+    fn trilinear_double_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_double::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_double::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_DOUBLE {
+            let expect = scalar_trilinear_double_ref::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0f32; 8];
+            incant!(
+                interpolate_trilinear_double::<u8, GRID_SIZE, 256>(
+                    ir, ig, ib, &*weights, &cube, &mut got,
+                ),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_f32x8_close(
+                got,
+                expect,
+                &format!("trilinear_double (r={ir},g={ig},b={ib})"),
+            );
+        }
+    }
+
+    #[cfg(feature = "options")]
+    #[test]
+    fn pyramid_double_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_double::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_double::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_DOUBLE {
+            let expect = scalar_pyramid_double_ref::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0f32; 8];
+            incant!(
+                interpolate_pyramid_double::<u8, GRID_SIZE, 256>(
+                    ir, ig, ib, &*weights, &cube, &mut got,
+                ),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_f32x8_close(
+                got,
+                expect,
+                &format!("pyramid_double (r={ir},g={ig},b={ib})"),
+            );
+        }
+    }
+
+    #[cfg(feature = "options")]
+    #[test]
+    fn prism_double_matches_scalar_reference() {
+        const GRID_SIZE: usize = 9;
+        let weights = random_weights_double::<GRID_SIZE>(0xC01D_F00D);
+        let cube = random_cube_double::<GRID_SIZE>(0xDEAD_BEEF);
+        for &(ir, ig, ib) in EQUIV_INPUTS_DOUBLE {
+            let expect = scalar_prism_double_ref::<GRID_SIZE>(ir, ig, ib, &weights, &cube);
+            let mut got = [0f32; 8];
+            incant!(
+                interpolate_prism_double::<u8, GRID_SIZE, 256>(
+                    ir, ig, ib, &*weights, &cube, &mut got,
+                ),
+                [v3, neon, wasm128, scalar]
+            );
+            assert_f32x8_close(got, expect, &format!("prism_double (r={ir},g={ig},b={ib})"));
+        }
+    }
+
     #[test]
     fn tetra_double_smoke() {
         const GRID_SIZE: usize = 2;
