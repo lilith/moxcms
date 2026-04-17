@@ -53,6 +53,18 @@ pub(crate) fn interpolate_tetra<
 
     let (x, y, z, x_n, y_n, z_n, rx, ry, rz) = load_bary_weights(lut, in_r, in_g, in_b);
 
+    // Bound all six indices and the cube length so LLVM can prove
+    // every `cube[offset]` below is in-bounds (the hand-written path
+    // reaches this by `get_unchecked`). `x,…,z_n ∈ [0, G)` implies
+    // `offset ∈ [0, G³)`, and `cube.len() >= G³` closes the gap.
+    // Four runtime asserts hoist out of the inner math; LLVM folds
+    // them into a single branch-predicted-taken check.
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
+
     let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
@@ -134,6 +146,14 @@ pub(crate) fn interpolate_trilinear<
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
 
+    // See `interpolate_tetra` for rationale — hoists four runtime
+    // asserts so LLVM can prove every `cube[offset]` in-bounds.
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
+
     let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
             + y as u32 * GRID_SIZE as u32
@@ -198,6 +218,14 @@ pub(crate) fn interpolate_pyramid<
     type f32x4 = GenericF32x4<Token>;
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+
+    // See `interpolate_tetra` for rationale — hoists four runtime
+    // asserts so LLVM can prove every `cube[offset]` in-bounds.
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
 
     let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
@@ -282,6 +310,14 @@ pub(crate) fn interpolate_prism<
     type f32x4 = GenericF32x4<Token>;
 
     let (x, y, z, x_n, y_n, z_n, dr, dg, db) = load_bary_weights(lut, in_r, in_g, in_b);
+
+    // See `interpolate_tetra` for rationale — hoists four runtime
+    // asserts so LLVM can prove every `cube[offset]` in-bounds.
+    let g = GRID_SIZE as u32;
+    assert!((x as u32) < g && (x_n as u32) < g);
+    assert!((y as u32) < g && (y_n as u32) < g);
+    assert!((z as u32) < g && (z_n as u32) < g);
+    assert!(cube.len() >= GRID_SIZE * GRID_SIZE * GRID_SIZE);
 
     let fetch = |x: i32, y: i32, z: i32| -> f32x4 {
         let offset = (x as u32 * (GRID_SIZE as u32 * GRID_SIZE as u32)
