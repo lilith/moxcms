@@ -413,23 +413,37 @@ t_lut3_to_3}.rs` that use this idiom.
 reinterprets in the adapter helpers.
 
 **Owned by:** **moxcms.** Per upstream, this kind of layout-
-plumbing redesign is on us. Two paths:
+plumbing redesign is on us. **Derive only — no manual
+`unsafe impl Pod`** (would just shuffle the unsafe around).
 
-  (a) Add concrete `Aligned4F32` / `Aligned4I16` /
-      `Aligned8F32` / `Aligned16I16` types in `simd_interp.rs`
-      with manual `unsafe impl Pod` / `Zeroable`. Replace
-      generic `Aligned4<T>` callers. Aliases per-arch types to
-      these concrete types via `pub(crate) type SseAlignedF32 =
-      Aligned4F32` (the constructor sites already use the named
-      structs, so they'd update from `SseAlignedF32([…])` to
-      `Aligned4F32::new([…])` factory call — also fix the type
-      alias E0423).
-  (b) Add an `unsafe impl<T: Pod> Pod for Aligned4<T> {}` — one
-      unsafe impl in the probe module, replaces 16 unsafe slice
-      casts in the adapters. Net −15. Localized.
+The viable path:
 
-(b) is the smallest change and gets us to net negative on
-unsafe. (a) is cleaner long-term.
+  > Replace generic `Aligned4<T>` with concrete `Aligned4F32` /
+  > `Aligned4I16` / `Aligned8F32` / `Aligned16I16` structs in
+  > `simd_interp.rs`. Each gets `#[derive(Pod, Zeroable)]` —
+  > works on concrete types because bytemuck can verify
+  > padding statically. The probe fns lose their generic over
+  > T (they were always specialized to f32 or i16 anyway).
+  > Per-arch types alias to the concrete probe types:
+  >
+  > ```rust
+  > pub(crate) type SseAlignedF32 =
+  >     crate::conversions::simd_interp::Aligned4F32;
+  > ```
+  >
+  > Existing constructor sites use `SseAlignedF32([…])` tuple-
+  > struct syntax — type aliases hit E0423 there. Fix by either
+  > (i) updating the ~6 construction sites to use
+  > `Aligned4F32::new([…])` factory, or (ii) keeping a thin
+  > newtype wrapper with a `#[inline(always)]` `From<[f32; 4]>`
+  > impl that delegates to the concrete type (constructors
+  > stay; bytemuck cast bridges).
+  >
+  > Adapter slice casts then become `bytemuck::cast_slice(table)`
+  > with no `unsafe`. Net −16 unsafe across the four
+  > integration files. Adds `bytemuck` as a dep (already vetted
+  > tiny, no_std-compatible, doesn't itself need `unsafe` on
+  > our side).
 
 **Priority:** Medium. 16 `unsafe` tokens sitting in the
 adapter helpers. Until resolved, moxcms' net `unsafe` stays ~16
