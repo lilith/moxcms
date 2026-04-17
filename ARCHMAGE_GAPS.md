@@ -3,11 +3,30 @@
 Running log of places where the current archmage + magetypes API
 forced moxcms to add workarounds (extra `unsafe`, scalar fallback,
 adapter layers), or where a reasonable pattern simply didn't
-compile. Upstream fixes to any of these would let moxcms shed more
-`unsafe` and/or match the hand-written codegen more directly.
+compile.
 
-Each entry: what we hit → what we did as a workaround → what an
-upstream fix could look like.
+## Boundary of responsibility
+
+Per upstream maintainers (2026-04-17): archmage / magetypes will
+ship **primitives that can be made safe and sound** — that means
+the SIMD type construction / lowering / raising operations in
+particular (`from_halves`, `split` / `to_halves`, possibly extra
+backend tiers like `Arm64V2` for `rdm`). **Architectural
+redesigns on the moxcms side are moxcms' job**, regardless of how
+invasive — including the dispatch-up refactor (#0), restructuring
+trait signatures, etc.
+
+So entries below are split by ownership:
+
+  * **Upstream-trackable** (#2, #4): primitives or backend tiers
+    that archmage/magetypes will provide.
+  * **Moxcms-owned** (#0, #7): redesigns or workarounds we
+    implement here.
+  * **Notes / wontfix** (#1, #3, #5, #6, #8): documented but
+    don't need action.
+
+Each entry below: what we hit → what we did as a workaround →
+what an upstream fix would look like (and which side will do it).
 
 ## 0. Per-pixel function-call boundary cost on Rust stable 1.89
 
@@ -83,30 +102,31 @@ Requires changes to `src/conversions/transform_lut3_to_3.rs`,
 `transform_lut3_to_4.rs`, `transform_lut4_to_3.rs` (the chunk
 dispatchers) plus the trait definitions themselves.
 
-**Upstream fix options:**
-  (a) Stabilize `#![feature(target_feature_inline_always)]` —
-      then `#[arcane]` and `#[magetypes]` can emit
-      `#[inline(always)]` on their inner tf fns and LLVM inlines
-      the body across the tf boundary without a separate symbol.
-      This is the true fix; everything else is a workaround.
-  (b) Add an `inline_always` option to `#[magetypes]` matching
-      the one `#[arcane]` already has — gated on the nightly
-      feature. Users opt in when they accept the nightly
-      constraint.
-  (c) Add a knob to `#[magetypes]` that emits `#[rite]`-style
-      inner fns (which already carry `#[inline(always)]` via
-      archmage's handling) instead of the standard inner tf fn.
-      Same effect on stable: helper is small + inline-always, and
-      inlines into `#[arcane]` callers (which our trait impl
-      isn't, but see option d).
-  (d) Document the "dispatch-up" pattern as the canonical
-      moxcms-shape workaround on stable Rust — hoist `#[arcane]`
-      above the pixel loop so the loop itself is inside a tf
-      region and every interpolator call inlines.
+**Owned by:** **moxcms.** Per upstream, redesigns here are our
+job. The plan:
 
-Option (a) is the true fix. (b) + (c) are mitigations. (d) is our
-immediate path — requires changing transform_chunk dispatchers +
-trait definitions, but doesn't need upstream or nightly.
+> **Dispatch-up refactor** — hoist `#[arcane]` (and the
+> `summon` + token acquisition) above the pixel loop so the loop
+> itself runs inside a `#[target_feature]` region. Every
+> interpolator call inside the loop is then a same-tf-region
+> call which LLVM inlines for free. Mechanically:
+>
+>   * `transform_chunk` (or the per-row dispatcher) acquires the
+>     token once via `summon`/`incant!`.
+>   * Replace `Box<dyn AvxMdInterpolation>` with a concrete
+>     monomorphized fn-ptr or generic dispatch that takes the
+>     token and the cube + weights, runs the pixel loop
+>     internally.
+>   * The interpolator probe is called from inside that tf
+>     region — fully inlined, zero call-boundary cost.
+>
+> Touches `transform_lut3_to_3.rs`, `transform_lut3_to_4.rs`,
+> `transform_lut4_to_3.rs`, plus the `*MdInterpolation` traits.
+> Non-trivial but doesn't depend on upstream.
+
+(Stabilization of `#![feature(target_feature_inline_always)]`
+would resolve this organically — but until that happens,
+dispatch-up is moxcms' workaround.)
 
 **Priority:** High — this is the root cause of the moxcms
 `rgb_lut_to_srgb` 30% regression. Fixable on our end (dispatch-
@@ -178,7 +198,10 @@ Option (b) is cleaner — adds a named primitive for the actual
 Q0.15 operation we want, instead of hoping LLVM reverse-engineers
 it from scalar arithmetic. Option (a) is more general.
 
-**Priority:** High for NEON Q0.15 perf. Needs upstream.
+**Owned by:** **archmage / magetypes** (upstream). User confirmed
+this is on the upstream roadmap.
+
+**Priority:** High for NEON Q0.15 perf.
 
 ---
 
@@ -298,8 +321,13 @@ can fetch from two 4-wide cubes and pack into `f32x8` per-access.
 The Double variants migrate cleanly and the ~16 shared `unsafe`
 tokens in moxcms come out.
 
-**Priority:** **High.** This is the largest remaining piece to
-net the moxcms `unsafe` reduction.
+**Owned by:** **archmage / magetypes** (upstream). Tracked as
+[archmage#36](https://github.com/imazen/archmage/issues/36).
+User confirmed `from_halves` + `lo`/`hi` are on the upstream
+roadmap as safe + sound primitives.
+
+**Priority:** **High.** Largest remaining piece to net the moxcms
+`unsafe` reduction.
 
 ---
 
@@ -384,28 +412,29 @@ t_lut3_to_3}.rs` that use this idiom.
 **Workaround:** kept per-arch structs + the 16 `unsafe` slice
 reinterprets in the adapter helpers.
 
-**Upstream fix options:**
-  (a) magetypes could ship a canonical `Aligned4F32` (concrete,
-      not generic) with `unsafe impl Pod` + `unsafe impl
-      Zeroable` in the crate itself. Same for `Aligned4I16`,
-      `Aligned8F32`, `Aligned16I16`. Moxcms could alias per-arch
-      types to those concrete types and use `bytemuck::cast_slice`
-      at the adapter — zero `unsafe` on the moxcms side.
-  (b) Bytemuck could grow a `PodInArray<const N: usize>` kind of
-      derive that works for generic structs whose fields are all
-      `[T; N]` where `T: Pod`. (Upstream discussion would likely
-      push back on this because general-case padding detection
-      for generic layouts is hard.)
-  (c) Moxcms could add its own `unsafe impl<T: Pod> Pod for
-      Aligned4<T> {}` — but that introduces `unsafe` we want to
-      eliminate, trading one kind for another.
+**Owned by:** **moxcms.** Per upstream, this kind of layout-
+plumbing redesign is on us. Two paths:
 
-Option (a) is the cleanest if magetypes takes the contribution.
+  (a) Add concrete `Aligned4F32` / `Aligned4I16` /
+      `Aligned8F32` / `Aligned16I16` types in `simd_interp.rs`
+      with manual `unsafe impl Pod` / `Zeroable`. Replace
+      generic `Aligned4<T>` callers. Aliases per-arch types to
+      these concrete types via `pub(crate) type SseAlignedF32 =
+      Aligned4F32` (the constructor sites already use the named
+      structs, so they'd update from `SseAlignedF32([…])` to
+      `Aligned4F32::new([…])` factory call — also fix the type
+      alias E0423).
+  (b) Add an `unsafe impl<T: Pod> Pod for Aligned4<T> {}` — one
+      unsafe impl in the probe module, replaces 16 unsafe slice
+      casts in the adapters. Net −15. Localized.
+
+(b) is the smallest change and gets us to net negative on
+unsafe. (a) is cleaner long-term.
 
 **Priority:** Medium. 16 `unsafe` tokens sitting in the
-adapter helpers. Until this resolves, moxcms' net `unsafe` stays
-~16 above the pre-migration baseline even after the Double variants
-migrate (which accounts for the other 16 we plan to remove).
+adapter helpers. Until resolved, moxcms' net `unsafe` stays ~16
+above the pre-migration baseline even after the Double variants
+migrate (which removes the other 16 we plan to remove).
 
 ---
 
