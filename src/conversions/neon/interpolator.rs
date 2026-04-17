@@ -31,6 +31,7 @@
 use crate::conversions::interpolator::{BarycentricWeight, load_bary_weights};
 use crate::conversions::neon::NeonAlignedF32;
 use crate::math::{FusedMultiplyAdd, FusedMultiplyNegAdd};
+use archmage::SimdToken;
 use num_traits::AsPrimitive;
 use std::arch::aarch64::*;
 use std::ops::{Add, Mul, Sub};
@@ -421,10 +422,156 @@ macro_rules! define_md_inter_neon_d {
     };
 }
 
-define_md_inter_neon!(TetrahedralNeon);
-define_md_inter_neon!(PyramidalNeon);
-define_md_inter_neon!(PrismaticNeon);
-define_md_inter_neon!(TrilinearNeon);
+// The single-variant NEON interpolators dispatch through the
+// magetypes probe instead of the hand-written
+// `{Tetrahedral,Pyramidal,Prismatic,Trilinear}Neon::interpolate` fns.
+// The `#[archmage::arcane]` wrapper takes a `NeonToken` and LLVM
+// inlines the probe inside the same-target-feature region, fusing
+// the `.store(out)` / `vld1q_f32(&out)` round-trip away.
+
+#[archmage::arcane]
+fn tetra_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<f32>; BINS],
+    table: &[NeonAlignedF32],
+) -> NeonVector {
+    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0f32; 4];
+    crate::conversions::simd_interp::interpolate_tetra_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVector {
+        v: unsafe { vld1q_f32(out.as_ptr()) },
+    }
+}
+
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>> NeonMdInterpolation<BINS, U>
+    for TetrahedralNeon<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedF32],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<f32>; BINS],
+    ) -> NeonVector {
+        let token = archmage::NeonToken::summon().expect("TetrahedralNeon dispatched without NEON");
+        tetra_neon_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
+
+#[archmage::arcane]
+fn pyramid_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<f32>; BINS],
+    table: &[NeonAlignedF32],
+) -> NeonVector {
+    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0f32; 4];
+    crate::conversions::simd_interp::interpolate_pyramid_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVector {
+        v: unsafe { vld1q_f32(out.as_ptr()) },
+    }
+}
+
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>> NeonMdInterpolation<BINS, U>
+    for PyramidalNeon<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedF32],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<f32>; BINS],
+    ) -> NeonVector {
+        let token = archmage::NeonToken::summon().expect("PyramidalNeon dispatched without NEON");
+        pyramid_neon_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
+
+#[archmage::arcane]
+fn prism_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<f32>; BINS],
+    table: &[NeonAlignedF32],
+) -> NeonVector {
+    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0f32; 4];
+    crate::conversions::simd_interp::interpolate_prism_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVector {
+        v: unsafe { vld1q_f32(out.as_ptr()) },
+    }
+}
+
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>> NeonMdInterpolation<BINS, U>
+    for PrismaticNeon<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedF32],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<f32>; BINS],
+    ) -> NeonVector {
+        let token = archmage::NeonToken::summon().expect("PrismaticNeon dispatched without NEON");
+        prism_neon_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
+
+#[archmage::arcane]
+fn trilinear_neon_dispatch<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+    token: archmage::NeonToken,
+    in_r: U,
+    in_g: U,
+    in_b: U,
+    lut: &[BarycentricWeight<f32>; BINS],
+    table: &[NeonAlignedF32],
+) -> NeonVector {
+    let cube: &[crate::conversions::simd_interp::Aligned4<f32>] =
+        unsafe { core::slice::from_raw_parts(table.as_ptr().cast(), table.len()) };
+    let mut out = [0f32; 4];
+    crate::conversions::simd_interp::interpolate_trilinear_neon::<U, GRID_SIZE, BINS>(
+        token, in_r, in_g, in_b, lut, cube, &mut out,
+    );
+    NeonVector {
+        v: unsafe { vld1q_f32(out.as_ptr()) },
+    }
+}
+
+impl<const GRID_SIZE: usize, const BINS: usize, U: AsPrimitive<usize>> NeonMdInterpolation<BINS, U>
+    for TrilinearNeon<GRID_SIZE>
+{
+    fn inter3_neon(
+        &self,
+        cube: &[NeonAlignedF32],
+        in_r: U,
+        in_g: U,
+        in_b: U,
+        lut: &[BarycentricWeight<f32>; BINS],
+    ) -> NeonVector {
+        let token = archmage::NeonToken::summon().expect("TrilinearNeon dispatched without NEON");
+        trilinear_neon_dispatch::<U, GRID_SIZE, BINS>(token, in_r, in_g, in_b, lut, cube)
+    }
+}
 define_md_inter_neon_d!(PrismaticNeonDouble);
 define_md_inter_neon_d!(PyramidalNeonDouble);
 define_md_inter_neon_d!(TetrahedralNeonDouble);
