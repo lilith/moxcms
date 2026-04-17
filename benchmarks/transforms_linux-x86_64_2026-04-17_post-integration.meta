@@ -1,0 +1,7 @@
+git: 8f29de1 (HEAD of magetypes-refactor)
+baseline: 97d44665 (benchmarks/transforms_linux-x86_64_2026-04-17.md)
+command: cargo bench --bench transforms --features options
+system: AMD Ryzen 9 7950X water-cooled; load_avg 1.97 at start
+integration state: 16 of 24 single-variant interpolators routed through
+  magetypes probe. AVX f32 + AVX Q0.15 + NEON f32 + NEON Q0.15.
+  Double variants + SSE4.1 still hand-written.
