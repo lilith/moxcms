@@ -9,6 +9,73 @@ compile. Upstream fixes to any of these would let moxcms shed more
 Each entry: what we hit → what we did as a workaround → what an
 upstream fix could look like.
 
+## 0. Per-pixel function-call boundary cost on Rust stable 1.89
+
+**Where:** every `inter3_sse` / `inter3_neon` call in the probe-integrated
+path.
+
+**What we hit:** the probe-integrated dispatch goes through an
+`#[archmage::arcane]` helper fn because the trait method can't be
+`#[target_feature]` (E0053). Each `inter3_sse` call on the hot path
+therefore crosses a function-call boundary → tf helper → inlined
+probe → return via stack round-trip → out.
+
+For `rgb_lut_to_srgb` in the moxcms benches — small 3-channel LUT
+with many calls per transform — this per-call boundary cost (~10ns
+of call + prologue + epilogue + token-check) dominates a per-pixel
+interpolation budget of a few ns. Measured: **−17% to −43%
+throughput vs the baseline** (all four interpolation methods,
+both `_lo` and `_hi` weight scales).
+
+`#[cmyk_to_srgb]` is much less affected (larger LUT, fewer calls
+per transform amortizes the boundary cost; +2% to +8% actually
+*faster* than baseline on the same bench run).
+
+**Root cause confirmed by asm inspection:** the arcane-generated
+inner fn is emitted as a separate symbol with `#[inline]` (not
+`#[inline(always)]`). LLVM doesn't inline across the tf boundary
+on stable because `target_feature_inline_always` is nightly-only
+(rust-lang/rust#145574). A manual `#[inline(always)]` on the
+source fn doesn't propagate through the arcane-generated wrapper.
+
+**Workaround attempts:**
+  * Added `#[inline(always)]` on the `#[arcane]`-attributed source
+    fn — no effect (macro emits its own `#[inline]` on the inner).
+  * Removed the bounds-hoist asserts (−0.5% — within noise, so not
+    the cost).
+  * Pass the output via `&mut [f32; 4]` + `_mm_loadu_ps(&out)`
+    round-trip — already in the code; confirmed that LLVM does fuse
+    the round-trip within the tf region.
+
+**Architectural fix:** move dispatch up from the `inter3_sse`
+trait method to `transform_chunk` (or higher):
+
+  1. `transform_chunk` calls `X64V3Token::summon().expect(…)` once
+     per chunk (1000s of pixels), not once per pixel.
+  2. Instead of `Box<dyn AvxMdInterpolation>`, dispatch to a
+     concrete `#[target_feature]` inner fn that takes the token
+     and iterates the pixel loop internally.
+  3. Per-pixel, the fn is a direct intra-tf call — no boundary,
+     LLVM inlines the interpolator body.
+
+This is the "dispatch-up" refactor noted in
+`benchmarks/transforms_linux-x86_64_2026-04-17_post-integration.md`.
+Requires changes to `src/conversions/transform_lut3_to_3.rs`,
+`transform_lut3_to_4.rs`, `transform_lut4_to_3.rs` (the chunk
+dispatchers) plus the trait definitions themselves.
+
+**Upstream fix:** stabilize
+`#![feature(target_feature_inline_always)]` — then `#[arcane]`
+can emit `#[inline(always)]` on its inner fn and LLVM inlines
+the body across the tf boundary without a separate symbol. Until
+then, the dispatch-up refactor is the pragmatic path.
+
+**Priority:** High — this is the root cause of the moxcms
+`rgb_lut_to_srgb` 30% regression. Fixable on our end (dispatch-
+up) but non-trivial.
+
+---
+
 ## 1. No `X64V2Token` tier for `F32x4Backend` / `I16x8Backend`
 
 **Where:** `src/conversions/sse/interpolator{,_q0_15}.rs` —
