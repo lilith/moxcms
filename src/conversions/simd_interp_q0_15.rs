@@ -68,7 +68,11 @@ fn load_q15<T: I16x8Backend>(token: T, x4: &Aligned4I16) -> GenericI16x8<T> {
 // --- Tetrahedral ---------------------------------------------------------
 
 #[magetypes(v3, neon, wasm128, scalar)]
-pub(crate) fn interpolate_tetra<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_tetra<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
@@ -143,7 +147,11 @@ pub(crate) fn interpolate_tetra<U: AsPrimitive<usize>, const GRID_SIZE: usize, c
 // --- Trilinear ----------------------------------------------------------
 
 #[magetypes(v3, neon, wasm128, scalar)]
-pub(crate) fn interpolate_trilinear<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_trilinear<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
@@ -193,7 +201,11 @@ pub(crate) fn interpolate_trilinear<U: AsPrimitive<usize>, const GRID_SIZE: usiz
 
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
-pub(crate) fn interpolate_pyramid<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_pyramid<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
@@ -248,7 +260,11 @@ pub(crate) fn interpolate_pyramid<U: AsPrimitive<usize>, const GRID_SIZE: usize,
 
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
-pub(crate) fn interpolate_prism<U: AsPrimitive<usize>, const GRID_SIZE: usize, const BINS: usize>(
+pub(crate) fn interpolate_prism<
+    U: AsPrimitive<usize>,
+    const GRID_SIZE: usize,
+    const BINS: usize,
+>(
     token: Token,
     in_r: U,
     in_g: U,
@@ -311,7 +327,9 @@ pub mod __asm_audit {
         cube: &[Aligned4I16],
         out: &mut [i16; 8],
     ) {
-        archmage::incant!(interpolate_tetra::<u8, 33, 256>(in_r, in_g, in_b, lut, cube, out,));
+        archmage::incant!(interpolate_tetra::<u8, 33, 256>(
+            in_r, in_g, in_b, lut, cube, out,
+        ));
     }
 
     #[inline(never)]

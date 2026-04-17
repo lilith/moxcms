@@ -279,8 +279,7 @@ mod tests {
             let x = (i as f32 * (GRID_SIZE as i32 - 1) as f32 / (BINS - 1) as f32).floor() as i32;
             entry.x = x;
             entry.x_n = (x + 1).min(GRID_SIZE as i32 - 1);
-            entry.w =
-                (i as f32 * (GRID_SIZE as i32 - 1) as f32 / (BINS - 1) as f32) - x as f32;
+            entry.w = (i as f32 * (GRID_SIZE as i32 - 1) as f32 / (BINS - 1) as f32) - x as f32;
         }
         w
     }
