@@ -198,7 +198,7 @@ net the moxcms `unsafe` reduction.
 
 ---
 
-## 5. `cargo fix` strips macro-provided imports
+## 6. `cargo fix` strips macro-provided imports
 
 **Where:** edits to `simd_interp*.rs` test modules — `use
 archmage::incant;` and `use archmage::SimdToken;` were flagged as
@@ -221,7 +221,7 @@ that's worse than just not running cargo fix on these files.
 
 ---
 
-## 6. `incant!` default tier list includes `v4` under `avx512` feature
+## 5. `incant!` default tier list includes `v4` under `avx512` feature
 
 **Where:** `simd_interp*.rs` test modules with `cargo test
 --all-features`.
@@ -250,7 +250,61 @@ defaults extend past what the probe was generated for.
 
 ---
 
-## 7. `#[deprecated(since = "0.5.0")]` on `forge_token_dangerously`
+## 7. Per-arch alignment wrappers can't share a `Pod`-derived type
+
+**Where:** `src/conversions/{avx,sse,neon}/interpolator{,_q0_15}.rs` —
+each arch defines its own `SseAlignedF32` / `NeonAlignedF32` /
+`AvxAlignedI16` / `NeonAlignedI16x4`. The probe defines
+`simd_interp::Aligned4<T>`. All are `#[repr(align(16 or 8), C)]`
+wrappers of `[f32; 4]` or `[i16; 4]`.
+
+**What we hit:** the adapter fns reinterpret `&[SseAlignedF32]`
+(etc.) into `&[Aligned4<f32>]` so the probe can consume them. The
+layouts are literally identical, but the reinterpret requires
+`unsafe { core::slice::from_raw_parts(…) }` — one block per
+adapter × 16 adapters = 16 `unsafe` tokens on the moxcms side.
+
+Attempted fix: derive `bytemuck::Pod + Zeroable` on `Aligned4<T>`
+and use `bytemuck::cast_slice`. Blocked: `Pod` can't be derived
+for non-`packed` generic structs (padding can't be verified at
+derive time when `T` is a generic parameter).
+
+Also attempted: `pub(crate) type SseAlignedF32 =
+crate::conversions::simd_interp::Aligned4<f32>;`. Blocked: type
+aliases can't be used as tuple-struct constructors
+(`SseAlignedF32([…])` fails with E0423), and there are six
+construction sites across `{avx,sse,neon}/{lut4_to_3,
+t_lut3_to_3}.rs` that use this idiom.
+
+**Workaround:** kept per-arch structs + the 16 `unsafe` slice
+reinterprets in the adapter helpers.
+
+**Upstream fix options:**
+  (a) magetypes could ship a canonical `Aligned4F32` (concrete,
+      not generic) with `unsafe impl Pod` + `unsafe impl
+      Zeroable` in the crate itself. Same for `Aligned4I16`,
+      `Aligned8F32`, `Aligned16I16`. Moxcms could alias per-arch
+      types to those concrete types and use `bytemuck::cast_slice`
+      at the adapter — zero `unsafe` on the moxcms side.
+  (b) Bytemuck could grow a `PodInArray<const N: usize>` kind of
+      derive that works for generic structs whose fields are all
+      `[T; N]` where `T: Pod`. (Upstream discussion would likely
+      push back on this because general-case padding detection
+      for generic layouts is hard.)
+  (c) Moxcms could add its own `unsafe impl<T: Pod> Pod for
+      Aligned4<T> {}` — but that introduces `unsafe` we want to
+      eliminate, trading one kind for another.
+
+Option (a) is the cleanest if magetypes takes the contribution.
+
+**Priority:** Medium. 16 `unsafe` tokens sitting in the
+adapter helpers. Until this resolves, moxcms' net `unsafe` stays
+~16 above the pre-migration baseline even after the Double variants
+migrate (which accounts for the other 16 we plan to remove).
+
+---
+
+## 8. `#[deprecated(since = "0.5.0")]` on `forge_token_dangerously`
 
 **Where:** considered as a perf shortcut when we're already inside
 `#[target_feature]` and have proof the feature is present —

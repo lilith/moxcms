@@ -25,6 +25,13 @@ use num_traits::AsPrimitive;
 /// 4-lane aligned LUT storage. `#[repr(align(16), C)]` keeps `movaps`
 /// alignment on x86 and 16-byte alignment on NEON/wasm128 — same
 /// contract the hand-written `SseAlignedF32` / `NeonAlignedF32` kept.
+///
+/// (Still generic-shaped for call-site readability. A `bytemuck::Pod`
+/// derive is blocked on the generic parameter — `Pod` can't verify
+/// padding for non-`packed` generic structs — so the adapters still
+/// rely on a raw-pointer slice reinterpret to bridge the hand-written
+/// `SseAlignedF32` / `NeonAlignedF32` slices. See `ARCHMAGE_GAPS.md`
+/// entry #8.)
 #[repr(align(16), C)]
 pub(crate) struct Aligned4<T>(pub(crate) [T; 4]);
 
