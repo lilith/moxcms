@@ -64,6 +64,8 @@ mod transform_lut3_to_4;
 mod transform_lut4_to_3;
 #[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32"), feature = "lut"))]
 mod simd_interp;
+#[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "wasm32"), feature = "lut"))]
+mod simd_interp_q0_15;
 #[cfg(all(target_arch = "x86_64", feature = "avx"))]
 mod v3_probe;
 mod xyz_lab;
