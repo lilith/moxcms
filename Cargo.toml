@@ -19,6 +19,14 @@ rust-version = "1.89.0"
 [dependencies]
 num-traits = "0.2"
 pxfm = "^0.1.1"
+# SIMD abstraction. `archmage` provides tokens (`X64V3Token`, `NeonToken`,
+# …) that prove CPU features at runtime and gate construction of the
+# `magetypes` SIMD types. `magetypes` provides f32x4/f32x8/i16x8/etc.
+# with natural operators that compile to raw intrinsics — replaces the
+# hand-written `SseVector`/`AvxVector`/`NeonVector` wrappers that wrap
+# `unsafe { intrinsic }` blocks individually.
+archmage = { version = "0.9.20", default-features = false }
+magetypes = { version = "0.9.20", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 rand = "0.10.0"
