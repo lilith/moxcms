@@ -160,6 +160,9 @@ pub(crate) fn interpolate_trilinear_double<
 
 // --- Pyramidal (options-gated) ------------------------------------------
 
+/// 256-bit four-term pyramidal Double — mirrors the f32x4 probe but
+/// fans out to 8 lanes. Same 4-term + bilinear correction as the
+/// scalar `Pyramidal::interpolate`.
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
 pub(crate) fn interpolate_pyramid_double<
@@ -187,37 +190,60 @@ pub(crate) fn interpolate_pyramid_double<
     };
 
     let c0 = fetch(x, y, z);
+    let dr_v = f32x8::splat(token, dr);
+    let dg_v = f32x8::splat(token, dg);
+    let db_v = f32x8::splat(token, db);
 
-    let (c1, c2, c3) = if dr > db && dg > db {
+    if dr > db && dg > db {
         let x0 = fetch(x_n, y_n, z_n);
         let x1 = fetch(x_n, y_n, z);
         let x2 = fetch(x_n, y, z);
         let x3 = fetch(x, y_n, z);
-        (x0 - x1, x2 - c0, x3 - c0)
+        let c1 = x0 - x1;
+        let c2 = x2 - c0;
+        let c3 = x3 - c0;
+        let c4 = c0 - x3 - x2 + x1;
+        let k = f32x8::splat(token, dr * dg);
+        let s0 = c1.mul_add(db_v, c0);
+        let s1 = c2.mul_add(dr_v, s0);
+        let s2 = c3.mul_add(dg_v, s1);
+        c4.mul_add(k, s2).store(out);
     } else if db > dr && dg > dr {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x, y_n, z_n);
-        let x2 = fetch(x, y_n, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y_n, z_n);
+        let x2 = fetch(x, y_n, z_n);
+        let x3 = fetch(x, y_n, z);
+        let c1 = x0 - c0;
+        let c2 = x1 - x2;
+        let c3 = x3 - c0;
+        let c4 = c0 - x3 - x0 + x2;
+        let k = f32x8::splat(token, dg * db);
+        let s0 = c1.mul_add(db_v, c0);
+        let s1 = c2.mul_add(dr_v, s0);
+        let s2 = c3.mul_add(dg_v, s1);
+        c4.mul_add(k, s2).store(out);
     } else {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x_n, y, z_n);
-        let x2 = fetch(x_n, y, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    };
-
-    let dr_v = f32x8::splat(token, dr);
-    let dg_v = f32x8::splat(token, dg);
-    let db_v = f32x8::splat(token, db);
-    let s0 = c1.mul_add(dr_v, c0);
-    let s1 = c2.mul_add(dg_v, s0);
-    c3.mul_add(db_v, s1).store(out);
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y, z);
+        let x2 = fetch(x_n, y, z_n);
+        let x3 = fetch(x_n, y_n, z_n);
+        let c1 = x0 - c0;
+        let c2 = x1 - c0;
+        let c3 = x3 - x2;
+        let c4 = c0 - x1 - x0 + x2;
+        let k = f32x8::splat(token, db * dr);
+        let s0 = c1.mul_add(db_v, c0);
+        let s1 = c2.mul_add(dr_v, s0);
+        let s2 = c3.mul_add(dg_v, s1);
+        c4.mul_add(k, s2).store(out);
+    }
 }
 
 // --- Prismatic (options-gated) ------------------------------------------
 
+/// 256-bit five-term prismatic Double — same decomposition as the
+/// f32x4 probe. Matches scalar `Prismatic::interpolate`
+/// (`db >= dr` branch choice).
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
 pub(crate) fn interpolate_prism_double<
@@ -245,27 +271,47 @@ pub(crate) fn interpolate_prism_double<
     };
 
     let c0 = fetch(x, y, z);
-
-    let (c1, c2, c3) = if dr > dg {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x_n, y, z_n);
-        let x2 = fetch(x_n, y, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    } else {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x, y_n, z_n);
-        let x2 = fetch(x, y_n, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    };
-
     let dr_v = f32x8::splat(token, dr);
     let dg_v = f32x8::splat(token, dg);
     let db_v = f32x8::splat(token, db);
-    let s0 = c1.mul_add(dr_v, c0);
-    let s1 = c2.mul_add(dg_v, s0);
-    c3.mul_add(db_v, s1).store(out);
+
+    if db >= dr {
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y, z_n);
+        let x2 = fetch(x, y_n, z);
+        let x3 = fetch(x, y_n, z_n);
+        let x4 = fetch(x_n, y_n, z_n);
+        let c1 = x0 - c0;
+        let c2 = x1 - x0;
+        let c3 = x2 - c0;
+        let c4 = c0 - x2 - x0 + x3;
+        let c5 = x0 - x3 - x1 + x4;
+        let k_dgdb = f32x8::splat(token, dg * db);
+        let k_drdg = f32x8::splat(token, dr * dg);
+        let s0 = c1.mul_add(db_v, c0);
+        let s1 = c2.mul_add(dr_v, s0);
+        let s2 = c3.mul_add(dg_v, s1);
+        let s3 = c4.mul_add(k_dgdb, s2);
+        c5.mul_add(k_drdg, s3).store(out);
+    } else {
+        let x0 = fetch(x_n, y, z);
+        let x1 = fetch(x_n, y, z_n);
+        let x2 = fetch(x, y_n, z);
+        let x3 = fetch(x_n, y_n, z);
+        let x4 = fetch(x_n, y_n, z_n);
+        let c1 = x1 - x0;
+        let c2 = x0 - c0;
+        let c3 = x2 - c0;
+        let c4 = x0 - x3 - x1 + x4;
+        let c5 = c0 - x2 - x0 + x3;
+        let k_dgdb = f32x8::splat(token, dg * db);
+        let k_drdg = f32x8::splat(token, dr * dg);
+        let s0 = c1.mul_add(db_v, c0);
+        let s1 = c2.mul_add(dr_v, s0);
+        let s2 = c3.mul_add(dg_v, s1);
+        let s3 = c4.mul_add(k_dgdb, s2);
+        c5.mul_add(k_drdg, s3).store(out);
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +509,7 @@ mod tests {
         lerp(c0, c1, db)
     }
 
+    /// 8-lane pyramidal reference — 4-term with bilinear correction.
     fn scalar_pyramid_double_ref<const GRID_SIZE: usize>(
         in_r: u8,
         in_g: u8,
@@ -477,6 +524,13 @@ mod tests {
                 + z as u32) as usize;
             cube[offset].0
         };
+        let add = |a: [f32; 8], b: [f32; 8]| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i] + b[i];
+            }
+            r
+        };
         let sub = |a: [f32; 8], b: [f32; 8]| -> [f32; 8] {
             let mut r = [0f32; 8];
             for i in 0..8 {
@@ -492,30 +546,49 @@ mod tests {
             r
         };
         let c0 = fetch(x, y, z);
-        let (c1, c2, c3) = if dr > db && dg > db {
+        if dr > db && dg > db {
             let x0 = fetch(x_n, y_n, z_n);
             let x1 = fetch(x_n, y_n, z);
             let x2 = fetch(x_n, y, z);
             let x3 = fetch(x, y_n, z);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+            let c1 = sub(x0, x1);
+            let c2 = sub(x2, c0);
+            let c3 = sub(x3, c0);
+            let c4 = add(sub(sub(c0, x3), x2), x1);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            mla(s2, c4, dr * dg)
         } else if db > dr && dg > dr {
-            let x0 = fetch(x_n, y_n, z_n);
-            let x1 = fetch(x, y_n, z_n);
-            let x2 = fetch(x, y_n, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+            let x0 = fetch(x, y, z_n);
+            let x1 = fetch(x_n, y_n, z_n);
+            let x2 = fetch(x, y_n, z_n);
+            let x3 = fetch(x, y_n, z);
+            let c1 = sub(x0, c0);
+            let c2 = sub(x1, x2);
+            let c3 = sub(x3, c0);
+            let c4 = add(sub(sub(c0, x3), x0), x2);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            mla(s2, c4, dg * db)
         } else {
-            let x0 = fetch(x_n, y_n, z_n);
-            let x1 = fetch(x_n, y, z_n);
-            let x2 = fetch(x_n, y, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
-        };
-        let s0 = mla(c0, c1, dr);
-        let s1 = mla(s0, c2, dg);
-        mla(s1, c3, db)
+            let x0 = fetch(x, y, z_n);
+            let x1 = fetch(x_n, y, z);
+            let x2 = fetch(x_n, y, z_n);
+            let x3 = fetch(x_n, y_n, z_n);
+            let c1 = sub(x0, c0);
+            let c2 = sub(x1, c0);
+            let c3 = sub(x3, x2);
+            let c4 = add(sub(sub(c0, x1), x0), x2);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            mla(s2, c4, db * dr)
+        }
     }
 
+    /// 8-lane prismatic reference — 5-term with two bilinear corrections.
     fn scalar_prism_double_ref<const GRID_SIZE: usize>(
         in_r: u8,
         in_g: u8,
@@ -530,6 +603,13 @@ mod tests {
                 + z as u32) as usize;
             cube[offset].0
         };
+        let add = |a: [f32; 8], b: [f32; 8]| -> [f32; 8] {
+            let mut r = [0f32; 8];
+            for i in 0..8 {
+                r[i] = a[i] + b[i];
+            }
+            r
+        };
         let sub = |a: [f32; 8], b: [f32; 8]| -> [f32; 8] {
             let mut r = [0f32; 8];
             for i in 0..8 {
@@ -545,22 +625,39 @@ mod tests {
             r
         };
         let c0 = fetch(x, y, z);
-        let (c1, c2, c3) = if dr > dg {
-            let x0 = fetch(x_n, y_n, z_n);
+        if db >= dr {
+            let x0 = fetch(x, y, z_n);
             let x1 = fetch(x_n, y, z_n);
-            let x2 = fetch(x_n, y, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
-        } else {
-            let x0 = fetch(x_n, y_n, z_n);
-            let x1 = fetch(x, y_n, z_n);
             let x2 = fetch(x, y_n, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
-        };
-        let s0 = mla(c0, c1, dr);
-        let s1 = mla(s0, c2, dg);
-        mla(s1, c3, db)
+            let x3 = fetch(x, y_n, z_n);
+            let x4 = fetch(x_n, y_n, z_n);
+            let c1 = sub(x0, c0);
+            let c2 = sub(x1, x0);
+            let c3 = sub(x2, c0);
+            let c4 = add(sub(sub(c0, x2), x0), x3);
+            let c5 = add(sub(sub(x0, x3), x1), x4);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            let s3 = mla(s2, c4, dg * db);
+            mla(s3, c5, dr * dg)
+        } else {
+            let x0 = fetch(x_n, y, z);
+            let x1 = fetch(x_n, y, z_n);
+            let x2 = fetch(x, y_n, z);
+            let x3 = fetch(x_n, y_n, z);
+            let x4 = fetch(x_n, y_n, z_n);
+            let c1 = sub(x1, x0);
+            let c2 = sub(x0, c0);
+            let c3 = sub(x2, c0);
+            let c4 = add(sub(sub(x0, x3), x1), x4);
+            let c5 = add(sub(sub(c0, x2), x0), x3);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            let s3 = mla(s2, c4, dg * db);
+            mla(s3, c5, dr * dg)
+        }
     }
 
     #[test]

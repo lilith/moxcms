@@ -173,6 +173,8 @@ pub(crate) fn interpolate_trilinear_double<
 
 // --- Pyramidal (options-gated) ------------------------------------------
 
+/// 256-bit Q0.15 four-term pyramidal Double — same shape as
+/// `simd_interp_q0_15::interpolate_pyramid` over 16 lanes.
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
 pub(crate) fn interpolate_pyramid_double<
@@ -200,38 +202,60 @@ pub(crate) fn interpolate_pyramid_double<
     };
 
     let c0 = fetch(x, y, z);
+    let dr_v = i16x16::splat(token, dr);
+    let dg_v = i16x16::splat(token, dg);
+    let db_v = i16x16::splat(token, db);
 
-    let (c1, c2, c3) = if dr > db && dg > db {
+    if dr > db && dg > db {
         let x0 = fetch(x_n, y_n, z_n);
         let x1 = fetch(x_n, y_n, z);
         let x2 = fetch(x_n, y, z);
         let x3 = fetch(x, y_n, z);
-        (x0 - x1, x2 - c0, x3 - c0)
+        let c1 = x0 - x1;
+        let c2 = x2 - c0;
+        let c3 = x3 - c0;
+        let c4 = c0 - x3 - x2 + x1;
+        let k = q15_mulhrs_16(token, dr_v, dg_v);
+        let s0 = c0 + q15_mulhrs_16(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs_16(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs_16(token, c3, dg_v);
+        (s2 + q15_mulhrs_16(token, c4, k)).store(out);
     } else if db > dr && dg > dr {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x, y_n, z_n);
-        let x2 = fetch(x, y_n, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y_n, z_n);
+        let x2 = fetch(x, y_n, z_n);
+        let x3 = fetch(x, y_n, z);
+        let c1 = x0 - c0;
+        let c2 = x1 - x2;
+        let c3 = x3 - c0;
+        let c4 = c0 - x3 - x0 + x2;
+        let k = q15_mulhrs_16(token, dg_v, db_v);
+        let s0 = c0 + q15_mulhrs_16(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs_16(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs_16(token, c3, dg_v);
+        (s2 + q15_mulhrs_16(token, c4, k)).store(out);
     } else {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x_n, y, z_n);
-        let x2 = fetch(x_n, y, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    };
-
-    let dr_v = i16x16::splat(token, dr);
-    let dg_v = i16x16::splat(token, dg);
-    let db_v = i16x16::splat(token, db);
-    let s0 = c0 + q15_mulhrs_16(token, c1, dr_v);
-    let s1 = s0 + q15_mulhrs_16(token, c2, dg_v);
-    let s2 = s1 + q15_mulhrs_16(token, c3, db_v);
-    s2.store(out);
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y, z);
+        let x2 = fetch(x_n, y, z_n);
+        let x3 = fetch(x_n, y_n, z_n);
+        let c1 = x0 - c0;
+        let c2 = x1 - c0;
+        let c3 = x3 - x2;
+        let c4 = c0 - x1 - x0 + x2;
+        let k = q15_mulhrs_16(token, db_v, dr_v);
+        let s0 = c0 + q15_mulhrs_16(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs_16(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs_16(token, c3, dg_v);
+        (s2 + q15_mulhrs_16(token, c4, k)).store(out);
+    }
 }
 
 // --- Prismatic (options-gated) ------------------------------------------
 
+/// 256-bit Q0.15 five-term prismatic Double — matches the 8-lane
+/// `simd_interp_q0_15::interpolate_prism` (`db > dr` branch, two
+/// `q15_mulhrs` bilinear corrections).
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
 pub(crate) fn interpolate_prism_double<
@@ -259,28 +283,45 @@ pub(crate) fn interpolate_prism_double<
     };
 
     let c0 = fetch(x, y, z);
-
-    let (c1, c2, c3) = if dr > dg {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x_n, y, z_n);
-        let x2 = fetch(x_n, y, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    } else {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x, y_n, z_n);
-        let x2 = fetch(x, y_n, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    };
-
     let dr_v = i16x16::splat(token, dr);
     let dg_v = i16x16::splat(token, dg);
     let db_v = i16x16::splat(token, db);
-    let s0 = c0 + q15_mulhrs_16(token, c1, dr_v);
-    let s1 = s0 + q15_mulhrs_16(token, c2, dg_v);
-    let s2 = s1 + q15_mulhrs_16(token, c3, db_v);
-    s2.store(out);
+    let k_dgdb = q15_mulhrs_16(token, dg_v, db_v);
+    let k_drdg = q15_mulhrs_16(token, dr_v, dg_v);
+
+    if db > dr {
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y, z_n);
+        let x2 = fetch(x, y_n, z);
+        let x3 = fetch(x, y_n, z_n);
+        let x4 = fetch(x_n, y_n, z_n);
+        let c1 = x0 - c0;
+        let c2 = x1 - x0;
+        let c3 = x2 - c0;
+        let c4 = c0 - x2 - x0 + x3;
+        let c5 = x0 - x3 - x1 + x4;
+        let s0 = c0 + q15_mulhrs_16(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs_16(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs_16(token, c3, dg_v);
+        let s3 = s2 + q15_mulhrs_16(token, c4, k_dgdb);
+        (s3 + q15_mulhrs_16(token, c5, k_drdg)).store(out);
+    } else {
+        let x0 = fetch(x_n, y, z);
+        let x1 = fetch(x_n, y, z_n);
+        let x2 = fetch(x, y_n, z);
+        let x3 = fetch(x_n, y_n, z);
+        let x4 = fetch(x_n, y_n, z_n);
+        let c1 = x1 - x0;
+        let c2 = x0 - c0;
+        let c3 = x2 - c0;
+        let c4 = x0 - x3 - x1 + x4;
+        let c5 = c0 - x2 - x0 + x3;
+        let s0 = c0 + q15_mulhrs_16(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs_16(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs_16(token, c3, dg_v);
+        let s3 = s2 + q15_mulhrs_16(token, c4, k_dgdb);
+        (s3 + q15_mulhrs_16(token, c5, k_drdg)).store(out);
+    }
 }
 
 #[cfg(test)]

@@ -199,6 +199,12 @@ pub(crate) fn interpolate_trilinear<
 
 // --- Pyramidal (options-gated) ------------------------------------------
 
+/// Four-term Q0.15 pyramidal decomposition with a bilinear correction.
+/// Mirrors `PyramidalSseQ0_15::interpolate` (`sse/interpolator_q0_15.rs`).
+/// The bilinear weight is computed as the Q0.15 product
+/// `q15_mulhrs(splat(a), splat(b))` — i.e. mulhrs on the splatted
+/// scalar weights, matching the hand-written
+/// `SseVector::from(a) * SseVector::from(b)` path.
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
 pub(crate) fn interpolate_pyramid<
@@ -226,38 +232,62 @@ pub(crate) fn interpolate_pyramid<
     };
 
     let c0 = fetch(x, y, z);
+    let dr_v = i16x8::splat(token, dr);
+    let dg_v = i16x8::splat(token, dg);
+    let db_v = i16x8::splat(token, db);
 
-    let (c1, c2, c3) = if dr > db && dg > db {
+    if dr > db && dg > db {
         let x0 = fetch(x_n, y_n, z_n);
         let x1 = fetch(x_n, y_n, z);
         let x2 = fetch(x_n, y, z);
         let x3 = fetch(x, y_n, z);
-        (x0 - x1, x2 - c0, x3 - c0)
+        let c1 = x0 - x1;
+        let c2 = x2 - c0;
+        let c3 = x3 - c0;
+        let c4 = c0 - x3 - x2 + x1;
+        let k = q15_mulhrs(token, dr_v, dg_v);
+        let s0 = c0 + q15_mulhrs(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs(token, c3, dg_v);
+        (s2 + q15_mulhrs(token, c4, k)).store(out);
     } else if db > dr && dg > dr {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x, y_n, z_n);
-        let x2 = fetch(x, y_n, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y_n, z_n);
+        let x2 = fetch(x, y_n, z_n);
+        let x3 = fetch(x, y_n, z);
+        let c1 = x0 - c0;
+        let c2 = x1 - x2;
+        let c3 = x3 - c0;
+        let c4 = c0 - x3 - x0 + x2;
+        let k = q15_mulhrs(token, dg_v, db_v);
+        let s0 = c0 + q15_mulhrs(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs(token, c3, dg_v);
+        (s2 + q15_mulhrs(token, c4, k)).store(out);
     } else {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x_n, y, z_n);
-        let x2 = fetch(x_n, y, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    };
-
-    let dr_v = i16x8::splat(token, dr);
-    let dg_v = i16x8::splat(token, dg);
-    let db_v = i16x8::splat(token, db);
-    let s0 = c0 + q15_mulhrs(token, c1, dr_v);
-    let s1 = s0 + q15_mulhrs(token, c2, dg_v);
-    let s2 = s1 + q15_mulhrs(token, c3, db_v);
-    s2.store(out);
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y, z);
+        let x2 = fetch(x_n, y, z_n);
+        let x3 = fetch(x_n, y_n, z_n);
+        let c1 = x0 - c0;
+        let c2 = x1 - c0;
+        let c3 = x3 - x2;
+        let c4 = c0 - x1 - x0 + x2;
+        let k = q15_mulhrs(token, db_v, dr_v);
+        let s0 = c0 + q15_mulhrs(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs(token, c3, dg_v);
+        (s2 + q15_mulhrs(token, c4, k)).store(out);
+    }
 }
 
 // --- Prismatic (options-gated) ------------------------------------------
 
+/// Five-term Q0.15 prismatic decomposition with two bilinear
+/// corrections. Mirrors `PrismaticSseQ0_15::interpolate`
+/// (`sse/interpolator_q0_15.rs`). Note the branch uses `db > dr`
+/// (not `>=`) matching the hand-written path — f32 scalar uses `>=`
+/// but the hand-written Q0.15 SSE/NEON paths use `>`.
 #[cfg(feature = "options")]
 #[magetypes(v3, neon, wasm128, scalar)]
 pub(crate) fn interpolate_prism<
@@ -285,28 +315,45 @@ pub(crate) fn interpolate_prism<
     };
 
     let c0 = fetch(x, y, z);
-
-    let (c1, c2, c3) = if dr > dg {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x_n, y, z_n);
-        let x2 = fetch(x_n, y, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    } else {
-        let x0 = fetch(x_n, y_n, z_n);
-        let x1 = fetch(x, y_n, z_n);
-        let x2 = fetch(x, y_n, z);
-        let x3 = fetch(x, y, z_n);
-        (x0 - x1, x2 - c0, x3 - c0)
-    };
-
     let dr_v = i16x8::splat(token, dr);
     let dg_v = i16x8::splat(token, dg);
     let db_v = i16x8::splat(token, db);
-    let s0 = c0 + q15_mulhrs(token, c1, dr_v);
-    let s1 = s0 + q15_mulhrs(token, c2, dg_v);
-    let s2 = s1 + q15_mulhrs(token, c3, db_v);
-    s2.store(out);
+    let k_dgdb = q15_mulhrs(token, dg_v, db_v);
+    let k_drdg = q15_mulhrs(token, dr_v, dg_v);
+
+    if db > dr {
+        let x0 = fetch(x, y, z_n);
+        let x1 = fetch(x_n, y, z_n);
+        let x2 = fetch(x, y_n, z);
+        let x3 = fetch(x, y_n, z_n);
+        let x4 = fetch(x_n, y_n, z_n);
+        let c1 = x0 - c0;
+        let c2 = x1 - x0;
+        let c3 = x2 - c0;
+        let c4 = c0 - x2 - x0 + x3;
+        let c5 = x0 - x3 - x1 + x4;
+        let s0 = c0 + q15_mulhrs(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs(token, c3, dg_v);
+        let s3 = s2 + q15_mulhrs(token, c4, k_dgdb);
+        (s3 + q15_mulhrs(token, c5, k_drdg)).store(out);
+    } else {
+        let x0 = fetch(x_n, y, z);
+        let x1 = fetch(x_n, y, z_n);
+        let x2 = fetch(x, y_n, z);
+        let x3 = fetch(x_n, y_n, z);
+        let x4 = fetch(x_n, y_n, z_n);
+        let c1 = x1 - x0;
+        let c2 = x0 - c0;
+        let c3 = x2 - c0;
+        let c4 = x0 - x3 - x1 + x4;
+        let c5 = c0 - x2 - x0 + x3;
+        let s0 = c0 + q15_mulhrs(token, c1, db_v);
+        let s1 = s0 + q15_mulhrs(token, c2, dr_v);
+        let s2 = s1 + q15_mulhrs(token, c3, dg_v);
+        let s3 = s2 + q15_mulhrs(token, c4, k_dgdb);
+        (s3 + q15_mulhrs(token, c5, k_drdg)).store(out);
+    }
 }
 
 // Monomorphic wrappers so the `cargo asm` audit can see concrete
@@ -561,6 +608,9 @@ mod tests {
         lerp(c0, c1, db)
     }
 
+    /// Q0.15 pyramid reference — mirrors `PyramidalSseQ0_15::interpolate`
+    /// in `sse/interpolator_q0_15.rs`. Four-term with a `mulhrs`
+    /// bilinear correction on the splatted weight product.
     fn scalar_pyramid_q15<const GRID_SIZE: usize>(
         in_r: u8,
         in_g: u8,
@@ -575,6 +625,14 @@ mod tests {
                 + z as u32) as usize;
             cube[offset].0
         };
+        let add = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
+            [
+                a[0].wrapping_add(b[0]),
+                a[1].wrapping_add(b[1]),
+                a[2].wrapping_add(b[2]),
+                a[3].wrapping_add(b[3]),
+            ]
+        };
         let sub = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
             [
                 a[0].wrapping_sub(b[0]),
@@ -592,30 +650,54 @@ mod tests {
             ]
         };
         let c0 = fetch(x, y, z);
-        let (c1, c2, c3) = if dr > db && dg > db {
+        if dr > db && dg > db {
             let x0 = fetch(x_n, y_n, z_n);
             let x1 = fetch(x_n, y_n, z);
             let x2 = fetch(x_n, y, z);
             let x3 = fetch(x, y_n, z);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+            let c1 = sub(x0, x1);
+            let c2 = sub(x2, c0);
+            let c3 = sub(x3, c0);
+            let c4 = add(sub(sub(c0, x3), x2), x1);
+            let k = mulhrs_ref(dr, dg);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            mla(s2, c4, k)
         } else if db > dr && dg > dr {
-            let x0 = fetch(x_n, y_n, z_n);
-            let x1 = fetch(x, y_n, z_n);
-            let x2 = fetch(x, y_n, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
+            let x0 = fetch(x, y, z_n);
+            let x1 = fetch(x_n, y_n, z_n);
+            let x2 = fetch(x, y_n, z_n);
+            let x3 = fetch(x, y_n, z);
+            let c1 = sub(x0, c0);
+            let c2 = sub(x1, x2);
+            let c3 = sub(x3, c0);
+            let c4 = add(sub(sub(c0, x3), x0), x2);
+            let k = mulhrs_ref(dg, db);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            mla(s2, c4, k)
         } else {
-            let x0 = fetch(x_n, y_n, z_n);
-            let x1 = fetch(x_n, y, z_n);
-            let x2 = fetch(x_n, y, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
-        };
-        let s0 = mla(c0, c1, dr);
-        let s1 = mla(s0, c2, dg);
-        mla(s1, c3, db)
+            let x0 = fetch(x, y, z_n);
+            let x1 = fetch(x_n, y, z);
+            let x2 = fetch(x_n, y, z_n);
+            let x3 = fetch(x_n, y_n, z_n);
+            let c1 = sub(x0, c0);
+            let c2 = sub(x1, c0);
+            let c3 = sub(x3, x2);
+            let c4 = add(sub(sub(c0, x1), x0), x2);
+            let k = mulhrs_ref(db, dr);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            mla(s2, c4, k)
+        }
     }
 
+    /// Q0.15 prism reference — mirrors `PrismaticSseQ0_15::interpolate`.
+    /// Five-term with two `mulhrs` bilinear corrections. Branch uses
+    /// `db > dr` (not `>=`) matching the hand-written path.
     fn scalar_prism_q15<const GRID_SIZE: usize>(
         in_r: u8,
         in_g: u8,
@@ -630,6 +712,14 @@ mod tests {
                 + z as u32) as usize;
             cube[offset].0
         };
+        let add = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
+            [
+                a[0].wrapping_add(b[0]),
+                a[1].wrapping_add(b[1]),
+                a[2].wrapping_add(b[2]),
+                a[3].wrapping_add(b[3]),
+            ]
+        };
         let sub = |a: [i16; 4], b: [i16; 4]| -> [i16; 4] {
             [
                 a[0].wrapping_sub(b[0]),
@@ -647,22 +737,41 @@ mod tests {
             ]
         };
         let c0 = fetch(x, y, z);
-        let (c1, c2, c3) = if dr > dg {
-            let x0 = fetch(x_n, y_n, z_n);
+        let k_dgdb = mulhrs_ref(dg, db);
+        let k_drdg = mulhrs_ref(dr, dg);
+        if db > dr {
+            let x0 = fetch(x, y, z_n);
             let x1 = fetch(x_n, y, z_n);
-            let x2 = fetch(x_n, y, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
-        } else {
-            let x0 = fetch(x_n, y_n, z_n);
-            let x1 = fetch(x, y_n, z_n);
             let x2 = fetch(x, y_n, z);
-            let x3 = fetch(x, y, z_n);
-            (sub(x0, x1), sub(x2, c0), sub(x3, c0))
-        };
-        let s0 = mla(c0, c1, dr);
-        let s1 = mla(s0, c2, dg);
-        mla(s1, c3, db)
+            let x3 = fetch(x, y_n, z_n);
+            let x4 = fetch(x_n, y_n, z_n);
+            let c1 = sub(x0, c0);
+            let c2 = sub(x1, x0);
+            let c3 = sub(x2, c0);
+            let c4 = add(sub(sub(c0, x2), x0), x3);
+            let c5 = add(sub(sub(x0, x3), x1), x4);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            let s3 = mla(s2, c4, k_dgdb);
+            mla(s3, c5, k_drdg)
+        } else {
+            let x0 = fetch(x_n, y, z);
+            let x1 = fetch(x_n, y, z_n);
+            let x2 = fetch(x, y_n, z);
+            let x3 = fetch(x_n, y_n, z);
+            let x4 = fetch(x_n, y_n, z_n);
+            let c1 = sub(x1, x0);
+            let c2 = sub(x0, c0);
+            let c3 = sub(x2, c0);
+            let c4 = add(sub(sub(x0, x3), x1), x4);
+            let c5 = add(sub(sub(c0, x2), x0), x3);
+            let s0 = mla(c0, c1, db);
+            let s1 = mla(s0, c2, dr);
+            let s2 = mla(s1, c3, dg);
+            let s3 = mla(s2, c4, k_dgdb);
+            mla(s3, c5, k_drdg)
+        }
     }
 
     fn assert_q15_bitexact(got: [i16; 8], expect: [i16; 4], ctx: &str) {
