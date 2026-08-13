@@ -585,7 +585,6 @@ where
 {
     /// Clamp function to clamp each channel within a given range
     #[inline]
-    #[allow(clippy::manual_clamp)]
     pub fn clamp(&self, min_value: T, max_value: T) -> Rgb<T> {
         Rgb::new(
             m_clamp(self.r, min_value, max_value),
@@ -616,7 +615,6 @@ where
 
     /// Clamp function to clamp each channel within a given range
     #[inline]
-    #[allow(clippy::manual_clamp)]
     pub fn clamp_p(&self, min_value: Rgb<T>, max_value: Rgb<T>) -> Rgb<T> {
         Rgb::new(
             m_clamp(self.r, max_value.r, min_value.r),

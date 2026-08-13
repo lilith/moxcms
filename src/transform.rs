@@ -979,7 +979,6 @@ impl ColorProfile {
                     GAMMA_CAP,
                 )
             } else {
-                #[allow(clippy::collapsible_if)]
                 if dst_pr.are_all_trc_the_same() {
                     #[cfg(feature = "extended_range")]
                     if !T::FINITE && options.allow_extended_range_rgb_xyz {
