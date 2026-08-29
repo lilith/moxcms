@@ -17,11 +17,11 @@ exclude = ["*.jpg", "../../assets/*", "*.png", "*.icc", "./assets/*"]
 rust-version = "1.89.0"
 
 [dependencies]
-num-traits = "0.2"
-pxfm = "^0.1.28"
+num-traits = "0.2.19"
+pxfm = "0.1.30"
 
 [dev-dependencies]
-rand = "0.10.0"
+rand = "0.10.2"
 
 [features]
 # If no unsafe intrinsics active then `forbid(unsafe)` will be used.
