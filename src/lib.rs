@@ -48,6 +48,7 @@ mod defaults;
 mod err;
 mod gamma;
 mod gamut;
+mod iccmax;
 mod ictcp;
 mod jzazbz;
 mod jzczhz;

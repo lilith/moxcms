@@ -26,6 +26,7 @@
  * // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+use crate::err::invalid_profile;
 use crate::profile::{LutDataType, ProfileHeader};
 use crate::tag::{TAG_SIZE, Tag, TagTypeDefinition};
 use crate::trc::ToneReprCurve;
@@ -249,7 +250,7 @@ fn write_trc_entry(into: &mut Vec<u8>, trc: &ToneReprCurve) -> Result<usize, Cms
                 || parametric_curve.len() == 6
                 || parametric_curve.len() == 2
             {
-                return Err(CmsError::InvalidProfile);
+                return Err(invalid_profile());
             }
             let para: u32 = TagTypeDefinition::ParametricToneCurve.into();
             write_u32_be(into, para);
@@ -317,7 +318,7 @@ fn write_vector3d(into: &mut Vec<u8>, v: Vector3d) {
 #[inline]
 fn write_lut_entry(into: &mut Vec<u8>, lut: &LutDataType) -> Result<usize, CmsError> {
     if !lut.has_same_kind() {
-        return Err(CmsError::InvalidProfile);
+        return Err(invalid_profile());
     }
     let start = into.len();
     let lut16_tag: u32 = match &lut.input_table {

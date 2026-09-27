@@ -4,6 +4,32 @@ Fast and safe conversion between ICC profiles; in pure Rust.
 
 Supports CMYK⬌RGBX, RGBX⬌RGBX, RGBX⬌GRAY, LAB⬌RGBX and CMYK⬌LAB, GRAY⬌RGB, any 3/4 color profiles to RGB and vice versa. Also supports almost any to any Display Class ICC profiles up to 16 inks.
 
+> **Imazen fork note**
+>
+> This fork extends `awxkee/moxcms` with broader compatibility for real-world
+> ICC profiles. It adds a `permissive` feature (default on) that accepts
+> profiles which lcms2 and skcms parse successfully but which upstream moxcms
+> rejects on strict-spec grounds:
+>
+> - ICC v0 (zero version field) → treated as v2.4
+> - ICC v5 / iccMAX → treated as v4.4 (functional subset)
+> - Lut8/Lut16 with 0- or 1-entry input/output tables → synthesized identity
+> - mAB/mBA nested curve arrays shorter than channel count → padded with identity
+> - Unknown ProfileClass values (e.g. iccMAX `cenc`) → treated as `ColorSpace`
+> - Unknown PCS color-space signature (all-zero) → treated as XYZ
+> - Unknown LUT tag type (e.g. iccMAX `mpet`, corrupt vendor output) → skipped,
+>   parser falls back to matrix/TRC tags from the same profile
+>
+> Test fixtures for the 9 real-world profiles that motivated these fixes
+> (Skia-bundled sRGB variants from color.org, Adobe/ColorGATE print profiles,
+> Linux-bundled Crayons / x11-colors named-color Lab profiles) live at
+> `assets/flagged/` with regression coverage in `tests/flagged.rs`.
+>
+> To match upstream strict behavior, build with `--no-default-features`.
+> A `trace-invalid-profile` feature is also available for diagnostic work;
+> it prints file:line for every `InvalidProfile` construction via a new
+> `err::invalid_profile()` helper.
+
 ## Example
 
 ```rust
