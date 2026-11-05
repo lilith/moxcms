@@ -66,7 +66,7 @@ impl ToneReprCurve {
                 }
                 if lut.len() == 1 {
                     let gamma = u8_fixed_8number_to_float(lut[0]);
-                    return Ok(Box::new(ToneCurveEvaluatorPureGamma { gamma }));
+                    return Ok(Box::new(ToneCurveEvaluatorPureGamma::new(gamma)));
                 }
                 let converted_curve = lut.iter().map(|&x| x as f32 / 65535.0).collect::<Vec<_>>();
                 Ok(Box::new(ToneCurveLutEvaluator {
@@ -106,7 +106,7 @@ impl ToneReprCurve {
                 }
                 if lut.len() == 1 {
                     let gamma = 1. / u8_fixed_8number_to_float(lut[0]);
-                    return Ok(Box::new(ToneCurveEvaluatorPureGamma { gamma }));
+                    return Ok(Box::new(ToneCurveEvaluatorPureGamma::new(gamma)));
                 }
                 let inverted_lut = invert_lut(lut, 16384);
                 let converted_curve = inverted_lut
@@ -1253,7 +1253,7 @@ impl ColorProfile {
                 }
                 if lut.len() == 1 {
                     let gamma = 1. / u8_fixed_8number_to_float(lut[0]);
-                    return Some(Box::new(ToneCurveEvaluatorPureGamma { gamma }));
+                    return Some(Box::new(ToneCurveEvaluatorPureGamma::new(gamma)));
                 }
                 None
             }
@@ -1403,7 +1403,7 @@ impl ColorProfile {
                 }
                 if lut.len() == 1 {
                     let gamma = u8_fixed_8number_to_float(lut[0]);
-                    return Some(Some(Box::new(ToneCurveEvaluatorPureGamma { gamma })));
+                    return Some(Some(Box::new(ToneCurveEvaluatorPureGamma::new(gamma))));
                 }
             }
             ToneReprCurve::Parametric(params) => {
@@ -1455,6 +1455,53 @@ pub(crate) struct ToneCurveParametricEvaluator {
 
 pub(crate) struct ToneCurveEvaluatorPureGamma {
     gamma: f32,
+    /// The magnitudes `dirty_powf` can represent the power of, which leave its result a normal
+    /// `f32`, as bit patterns: the smallest, and the distance to the largest. Anything else,
+    /// zero, subnormals, infinity and NaN among them, takes `f_powf`.
+    fast_min_bits: u32,
+    fast_span: u32,
+}
+
+impl ToneCurveEvaluatorPureGamma {
+    fn new(gamma: f32) -> Self {
+        let fast_min = f_powf(2., -125. / gamma).max(f32::MIN_POSITIVE).to_bits();
+        let fast_max = f_powf(2., 126. / gamma).min(f32::MAX).to_bits();
+        Self {
+            gamma,
+            fast_min_bits: fast_min,
+            fast_span: fast_max - fast_min,
+        }
+    }
+
+    #[inline(always)]
+    fn is_fast(&self, x: f32) -> bool {
+        (x.to_bits() & 0x7fff_ffff).wrapping_sub(self.fast_min_bits) <= self.fast_span
+    }
+
+    /// A pure power curve, extended to negative samples as an odd function:
+    /// `sign(x) * |x|^gamma`.
+    ///
+    /// `dirty_powf` takes the sign of a negative base from the integer part of the exponent,
+    /// which would make the result's sign depend on the curve's gamma.
+    #[inline(always)]
+    fn fast(&self, x: f32) -> f32 {
+        dirty_powf(x.abs(), self.gamma).copysign(x)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn exact(&self, x: f32) -> f32 {
+        f_powf(x.abs(), self.gamma).copysign(x)
+    }
+
+    #[inline(always)]
+    fn odd_pure_gamma(&self, x: f32) -> f32 {
+        if self.is_fast(x) {
+            self.fast(x)
+        } else {
+            self.exact(x)
+        }
+    }
 }
 
 pub(crate) struct ToneCurveEvaluatorLinear {}
@@ -1484,27 +1531,22 @@ impl ToneCurveEvaluator for ToneCurveParametricEvaluator {
     }
 }
 
-/// A pure power curve, extended to negative samples as an odd function: `sign(x) * |x|^gamma`.
-///
-/// `dirty_powf` takes the sign of a negative base from the integer part of the exponent, which
-/// would make the result's sign depend on the curve's gamma.
-#[inline(always)]
-fn odd_pure_gamma(x: f32, gamma: f32) -> f32 {
-    let magnitude = dirty_powf(x.abs(), gamma);
-    if x < 0. { -magnitude } else { magnitude }
-}
-
 impl ToneCurveEvaluator for ToneCurveEvaluatorPureGamma {
     fn evaluate_tristimulus(&self, rgb: Rgb<f32>) -> Rgb<f32> {
-        Rgb::new(
-            odd_pure_gamma(rgb.r, self.gamma),
-            odd_pure_gamma(rgb.g, self.gamma),
-            odd_pure_gamma(rgb.b, self.gamma),
-        )
+        // One test for the pixel keeps the common case free of branches around each power.
+        if self.is_fast(rgb.r) & self.is_fast(rgb.g) & self.is_fast(rgb.b) {
+            Rgb::new(self.fast(rgb.r), self.fast(rgb.g), self.fast(rgb.b))
+        } else {
+            Rgb::new(
+                self.odd_pure_gamma(rgb.r),
+                self.odd_pure_gamma(rgb.g),
+                self.odd_pure_gamma(rgb.b),
+            )
+        }
     }
 
     fn evaluate_value(&self, value: f32) -> f32 {
-        odd_pure_gamma(value, self.gamma)
+        self.odd_pure_gamma(value)
     }
 }
 
@@ -1613,8 +1655,7 @@ mod tests {
         }
     }
 
-    /// Samples that aren't negative, negative zero and NaN of either sign among them, compute
-    /// exactly what `dirty_powf` computes for them.
+    /// Non-negative samples the fast power can represent compute exactly what it computes.
     #[test]
     fn pure_gamma_leaves_non_negative_samples_alone() {
         for gamma in GAMMAS {
@@ -1629,9 +1670,14 @@ mod tests {
             ];
             for (evaluator, exponent) in evaluators {
                 let stepped = (0..=f32::INFINITY.to_bits()).step_by(4099);
-                let special = [(-0f32).to_bits(), f32::NAN.to_bits(), (-f32::NAN).to_bits()];
-                for bits in stepped.chain(special) {
+                for bits in stepped {
                     let x = f32::from_bits(bits);
+                    if !(f_powf(2., -125. / exponent)..=f_powf(2., 126. / exponent)).contains(&x)
+                        || x < f32::MIN_POSITIVE
+                        || x == f32::INFINITY
+                    {
+                        continue;
+                    }
                     assert_eq!(
                         evaluator.evaluate_value(x).to_bits(),
                         dirty_powf(x, exponent).to_bits(),
@@ -1763,6 +1809,129 @@ mod tests {
                 "channel {c}: got {}, exact {exact}",
                 encoded[c]
             );
+        }
+    }
+
+    /// Where `dirty_powf` can't represent the result it returns unrelated values: gamma 1.8 of
+    /// zero came out as -1.65e8. Compared in f32, so overflow and underflow count as exact.
+    #[test]
+    fn pure_gamma_is_exact_outside_the_range_of_the_fast_power() {
+        for gamma in GAMMAS {
+            for (evaluator, exponent) in pure_gamma_evaluators(gamma) {
+                let min_subnormal = f32::from_bits(1);
+                for x in [
+                    min_subnormal,
+                    f32::MIN_POSITIVE,
+                    1e-30,
+                    1e-20,
+                    1e-15,
+                    1e-12,
+                    1e12,
+                    1e20,
+                    f32::MAX,
+                ] {
+                    let exact = (x as f64).powf(exponent);
+                    let value = evaluator.evaluate_value(x);
+                    if (exact as f32).is_infinite() || exact as f32 == 0. {
+                        assert_eq!(value, exact as f32, "{x}^{exponent}");
+                    } else {
+                        // The worst of all 2^32 inputs on these curves is 1.2e-5, plus the
+                        // step between subnormal results.
+                        let error = (value as f64 - exact).abs();
+                        assert!(
+                            error <= exact * 2e-5 + f32::from_bits(1) as f64,
+                            "{x}^{exponent}: got {value}, exact {exact}"
+                        );
+                    }
+                }
+                assert_eq!(evaluator.evaluate_value(0.).to_bits(), 0f32.to_bits());
+                assert_eq!(evaluator.evaluate_value(-0.).to_bits(), (-0f32).to_bits());
+                assert_eq!(
+                    evaluator.evaluate_value(f32::INFINITY),
+                    f32::INFINITY,
+                    "inf^{exponent}"
+                );
+                assert!(evaluator.evaluate_value(f32::NAN).is_nan(), "{exponent}");
+            }
+        }
+    }
+
+    /// ProPhoto (0.5, 0.5, 0) is (0.6461, 0.5729, -0.6007) in extended sRGB. Decoding its zero
+    /// channel used to give about -1.65e8 in linear light.
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn zero_channel_of_a_pure_gamma_source_stays_zero() {
+        let source = ColorProfile::new_pro_photo_rgb();
+        let target = ColorProfile::new_srgb();
+        let m = target
+            .rgb_to_xyz_matrix()
+            .inverse()
+            .mat_mul(source.rgb_to_xyz_matrix())
+            .v;
+        let transform = source
+            .create_transform_f32(Layout::Rgb, &target, Layout::Rgb, extended_options())
+            .unwrap();
+        let src = [0.5f32, 0.5, 0.];
+        let mut dst = [0f32; 3];
+        transform.transform(&src, &mut dst).unwrap();
+        let encode = |v: f64| {
+            if v < 0.0030412825601275209 {
+                v * 12.92
+            } else {
+                1.0550107189475866 * v.powf(1. / 2.4) - 0.0550107189475866
+            }
+        };
+        let linear = src.map(|x| (x as f64).powf(461. / 256.));
+        for c in 0..3 {
+            let v = m[c][0] * linear[0] + m[c][1] * linear[1] + m[c][2] * linear[2];
+            assert!(
+                (dst[c] as f64 - encode(v)).abs() < 1e-3,
+                "channel {c}: got {}, exact {}",
+                dst[c],
+                encode(v)
+            );
+        }
+    }
+
+    /// The CICP curves that use the fast power with a fixed exponent, at the samples it can't
+    /// represent. Through a linear target, so only the source curve is under test.
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn cicp_pure_gamma_curves_are_exact_at_tiny_samples() {
+        use crate::{CicpColorPrimaries, CicpProfile, MatrixCoefficients};
+        let with = |transfer_characteristics| {
+            let mut profile = ColorProfile::new_srgb();
+            profile.cicp = Some(CicpProfile {
+                color_primaries: CicpColorPrimaries::Bt709,
+                transfer_characteristics,
+                matrix_coefficients: MatrixCoefficients::Bt709,
+                full_range: true,
+            });
+            profile
+        };
+        let linear = with(TransferCharacteristics::Linear);
+        for (tc, exponent, scale) in [
+            (TransferCharacteristics::Bt470M, 2.2f64, 1f64),
+            (TransferCharacteristics::Bt470Bg, 2.8, 1.),
+            (
+                TransferCharacteristics::Smpte428,
+                2.6,
+                1. / 0.91655527974030934,
+            ),
+        ] {
+            let transform = with(tc)
+                .create_transform_f32(Layout::Rgb, &linear, Layout::Rgb, extended_options())
+                .unwrap();
+            for x in [0f32, 1e-30, 1e-20, 1e-15] {
+                let mut dst = [0f32; 3];
+                transform.transform(&[x; 3], &mut dst).unwrap();
+                let exact = (x as f64).powf(exponent) * scale;
+                assert!(
+                    (dst[0] as f64 - exact).abs() <= exact * 1e-3 + 1e-30,
+                    "{tc:?} at {x}: got {}, exact {exact}",
+                    dst[0]
+                );
+            }
         }
     }
 }
