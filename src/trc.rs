@@ -1484,17 +1484,27 @@ impl ToneCurveEvaluator for ToneCurveParametricEvaluator {
     }
 }
 
+/// A pure power curve, extended to negative samples as an odd function: `sign(x) * |x|^gamma`.
+///
+/// `dirty_powf` takes the sign of a negative base from the integer part of the exponent, which
+/// would make the result's sign depend on the curve's gamma.
+#[inline(always)]
+fn odd_pure_gamma(x: f32, gamma: f32) -> f32 {
+    let magnitude = dirty_powf(x.abs(), gamma);
+    if x < 0. { -magnitude } else { magnitude }
+}
+
 impl ToneCurveEvaluator for ToneCurveEvaluatorPureGamma {
     fn evaluate_tristimulus(&self, rgb: Rgb<f32>) -> Rgb<f32> {
         Rgb::new(
-            dirty_powf(rgb.r, self.gamma),
-            dirty_powf(rgb.g, self.gamma),
-            dirty_powf(rgb.b, self.gamma),
+            odd_pure_gamma(rgb.r, self.gamma),
+            odd_pure_gamma(rgb.g, self.gamma),
+            odd_pure_gamma(rgb.b, self.gamma),
         )
     }
 
     fn evaluate_value(&self, value: f32) -> f32 {
-        dirty_powf(value, self.gamma)
+        odd_pure_gamma(value, self.gamma)
     }
 }
 
@@ -1511,4 +1521,248 @@ impl ToneCurveEvaluator for ToneCurveEvaluatorLinear {
 pub trait ToneCurveEvaluator {
     fn evaluate_tristimulus(&self, rgb: Rgb<f32>) -> Rgb<f32>;
     fn evaluate_value(&self, value: f32) -> f32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(feature = "extended_range")]
+    use crate::{Layout, TransformOptions};
+
+    /// `dirty_powf` is an approximation. Its worst relative error against exact f64 math is
+    /// 3.5e-6 over magnitudes from 1e-4 to 8, on all the exponents below.
+    const POW_RELATIVE_ERROR: f64 = 1e-5;
+
+    type Evaluator = Box<dyn ToneCurveEvaluator + Send + Sync>;
+
+    /// The decode and encode evaluators of a pure-gamma curve, each with its exact exponent.
+    fn pure_gamma_evaluators(gamma: f32) -> [(Evaluator, f64); 2] {
+        let curve = curve_from_gamma(gamma);
+        let ToneReprCurve::Lut(lut) = &curve else {
+            unreachable!()
+        };
+        let exact = u8_fixed_8number_to_float(lut[0]) as f64;
+        [
+            (curve.make_linear_evaluator().unwrap(), exact),
+            (curve.make_gamma_evaluator().unwrap(), 1. / exact),
+        ]
+    }
+
+    fn odd_pow(x: f64, exponent: f64) -> f64 {
+        x.abs().powf(exponent).copysign(x)
+    }
+
+    fn assert_close(got: f32, exact: f64, what: &str) {
+        let error = (got as f64 - exact).abs();
+        assert!(
+            error <= exact.abs() * POW_RELATIVE_ERROR,
+            "{what}: got {got}, exact {exact}"
+        );
+    }
+
+    /// Every integer part of the exponent, since the sign must not depend on it.
+    const GAMMAS: [f32; 7] = [1.0, 1.8, 2.19921875, 2.6, 2.8, 3.0, 4.0];
+
+    #[test]
+    fn pure_gamma_is_odd_for_negative_samples() {
+        for gamma in GAMMAS {
+            for (evaluator, exponent) in pure_gamma_evaluators(gamma) {
+                for x in [
+                    -1e-4f32, -0.001, -0.051, -0.25, -0.5, -0.99, -1.0, -1.5, -8.0,
+                ] {
+                    let what = format!("{x}^{exponent}");
+                    let exact = odd_pow(x as f64, exponent);
+                    let value = evaluator.evaluate_value(x);
+                    assert_close(value, exact, &what);
+                    assert_eq!(
+                        value.to_bits(),
+                        (-evaluator.evaluate_value(-x)).to_bits(),
+                        "{what}"
+                    );
+                    let rgb = evaluator.evaluate_tristimulus(Rgb::new(x, -x, x));
+                    assert_eq!(rgb.r.to_bits(), value.to_bits(), "{what}");
+                    assert_eq!(rgb.g.to_bits(), (-value).to_bits(), "{what}");
+                    assert_eq!(rgb.b.to_bits(), value.to_bits(), "{what}");
+                }
+            }
+        }
+    }
+
+    /// Oddness alone holds down to the smallest samples, whatever the power's precision there.
+    #[test]
+    fn pure_gamma_is_odd_for_tiny_and_huge_samples() {
+        for gamma in GAMMAS {
+            for (evaluator, _) in pure_gamma_evaluators(gamma) {
+                let min_subnormal = f32::from_bits(1);
+                for x in [
+                    min_subnormal,
+                    f32::MIN_POSITIVE,
+                    1e-30,
+                    1e-10,
+                    1e6,
+                    f32::MAX,
+                    f32::INFINITY,
+                ] {
+                    assert_eq!(
+                        evaluator.evaluate_value(-x).to_bits(),
+                        (-evaluator.evaluate_value(x)).to_bits(),
+                        "{x}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Samples that aren't negative, negative zero and NaN of either sign among them, compute
+    /// exactly what `dirty_powf` computes for them.
+    #[test]
+    fn pure_gamma_leaves_non_negative_samples_alone() {
+        for gamma in GAMMAS {
+            let curve = curve_from_gamma(gamma);
+            let ToneReprCurve::Lut(lut) = &curve else {
+                unreachable!()
+            };
+            let decode = u8_fixed_8number_to_float(lut[0]);
+            let evaluators = [
+                (curve.make_linear_evaluator().unwrap(), decode),
+                (curve.make_gamma_evaluator().unwrap(), 1. / decode),
+            ];
+            for (evaluator, exponent) in evaluators {
+                let stepped = (0..=f32::INFINITY.to_bits()).step_by(4099);
+                let special = [(-0f32).to_bits(), f32::NAN.to_bits(), (-f32::NAN).to_bits()];
+                for bits in stepped.chain(special) {
+                    let x = f32::from_bits(bits);
+                    assert_eq!(
+                        evaluator.evaluate_value(x).to_bits(),
+                        dirty_powf(x, exponent).to_bits(),
+                        "{x}^{exponent}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "extended_range")]
+    fn extended_options() -> TransformOptions {
+        TransformOptions {
+            allow_extended_range_rgb_xyz: true,
+            ..Default::default()
+        }
+    }
+
+    /// Display P3's sRGB curve.
+    #[cfg(feature = "extended_range")]
+    fn srgb_decode(x: f64) -> f64 {
+        if x < 0.04045 {
+            x / 12.92
+        } else {
+            ((x + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// Display P3 (247, 255, 0) is out of gamut for Adobe RGB: its linear blue is about -0.051.
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn out_of_gamut_sample_keeps_its_sign_on_a_pure_gamma_target() {
+        let source = ColorProfile::new_display_p3();
+        let target = ColorProfile::new_adobe_rgb();
+        let m = target
+            .rgb_to_xyz_matrix()
+            .inverse()
+            .mat_mul(source.rgb_to_xyz_matrix())
+            .v;
+        let src = [247f32 / 255., 1., 0.];
+        let linear = src.map(|x| srgb_decode(x as f64));
+        let exact = m.map(|row| {
+            let v = row[0] * linear[0] + row[1] * linear[1] + row[2] * linear[2];
+            odd_pow(v, 256. / 563.)
+        });
+        assert!(exact[2] < 0., "the test needs an out-of-gamut sample");
+
+        let f32_transform = source
+            .create_transform_f32(Layout::Rgb, &target, Layout::Rgb, extended_options())
+            .unwrap();
+        let mut dst = [0f32; 3];
+        f32_transform.transform(&src, &mut dst).unwrap();
+        for c in 0..3 {
+            assert!(
+                (dst[c] as f64 - exact[c]).abs() < 1e-3,
+                "f32 channel {c}: got {}, exact {}",
+                dst[c],
+                exact[c]
+            );
+        }
+
+        let f64_transform = source
+            .create_transform_f64(Layout::Rgb, &target, Layout::Rgb, extended_options())
+            .unwrap();
+        let mut dst = [0f64; 3];
+        f64_transform
+            .transform(&src.map(|x| x as f64), &mut dst)
+            .unwrap();
+        for c in 0..3 {
+            assert!(
+                (dst[c] - exact[c]).abs() < 1e-3,
+                "f64 channel {c}: got {}, exact {}",
+                dst[c],
+                exact[c]
+            );
+        }
+    }
+
+    /// A negative gray sample through both curves of an extended gray transform.
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn negative_gray_sample_keeps_its_sign() {
+        let source = ColorProfile::new_gray_with_gamma(2.2);
+        let target = ColorProfile::new_gray_with_gamma(2.6);
+        let transform = source
+            .create_transform_f32(Layout::Gray, &target, Layout::Gray, extended_options())
+            .unwrap();
+        let mut dst = [0f32; 1];
+        transform.transform(&[-0.5], &mut dst).unwrap();
+        let exact = odd_pow(odd_pow(-0.5, 563. / 256.), 256. / 666.);
+        assert!(
+            (dst[0] as f64 - exact).abs() < 1e-3,
+            "got {}, exact {exact}",
+            dst[0]
+        );
+    }
+
+    /// A CMYK LUT source through the extended XYZ stage. SWOP's solid cyan is out of gamut for
+    /// sRGB's primaries, so red is negative in linear light. The same transform onto a linear
+    /// target gives that value, and a solid ink is a LUT grid node, so nothing is interpolated.
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn lut_source_keeps_the_sign_on_a_pure_gamma_target() {
+        let icc = std::fs::read("./assets/us_swop_coated.icc").expect("us_swop_coated.icc");
+        let source = ColorProfile::new_from_slice(&icc).unwrap();
+        let with_curve = |curve: ToneReprCurve| {
+            let mut target = ColorProfile::new_srgb();
+            target.cicp = None;
+            target.red_trc = Some(curve.clone());
+            target.green_trc = Some(curve.clone());
+            target.blue_trc = Some(curve);
+            target
+        };
+        let run = |target: &ColorProfile| {
+            let transform = source
+                .create_transform_f32(Layout::Rgba, target, Layout::Rgb, extended_options())
+                .unwrap();
+            let mut dst = [0f32; 3];
+            transform.transform(&[1., 0., 0., 0.], &mut dst).unwrap();
+            dst
+        };
+        let linear = run(&with_curve(ToneReprCurve::Lut(vec![])));
+        assert!(linear[0] < 0., "the test needs an out-of-gamut sample");
+        let encoded = run(&with_curve(curve_from_gamma(2.19921875)));
+        for c in 0..3 {
+            let exact = odd_pow(linear[c] as f64, 256. / 563.);
+            assert!(
+                (encoded[c] as f64 - exact).abs() < 1e-3,
+                "channel {c}: got {}, exact {exact}",
+                encoded[c]
+            );
+        }
+    }
 }
