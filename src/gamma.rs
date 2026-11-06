@@ -162,7 +162,16 @@ pub(crate) fn smpte428_to_linear(gamma: f64) -> f64 {
 /// Linear transfer function for Smpte 428
 pub(crate) fn smpte428_to_linearf_extended(gamma: f32) -> f32 {
     const SCALE: f32 = 1. / 0.91655527974030934;
-    dirty_powf(gamma.max(0.), 2.6) * SCALE
+    bounded_powf(gamma.max(0.), 2.6) * SCALE
+}
+
+#[cfg(feature = "extended_range")]
+/// Linear transfer function for Smpte 428, of a pixel
+fn smpte428_to_linear_tristimulus(gamma: Rgb<f32>) -> Rgb<f32> {
+    const SCALE: f32 = 1. / 0.91655527974030934;
+    let rgb = Rgb::new(gamma.r.max(0.), gamma.g.max(0.), gamma.b.max(0.));
+    let linear = bounded_powf_tristimulus(rgb, 2.6);
+    Rgb::new(linear.r * SCALE, linear.g * SCALE, linear.b * SCALE)
 }
 
 /// Gamma transfer function for Smpte 428
@@ -175,7 +184,19 @@ fn smpte428_from_linear(linear: f64) -> f64 {
 /// Gamma transfer function for Smpte 428
 fn smpte428_from_linearf(linear: f32) -> f32 {
     const POWER_VALUE: f32 = 1.0 / 2.6;
-    dirty_powf(0.91655527974030934 * linear.max(0.), POWER_VALUE)
+    bounded_powf(0.91655527974030934 * linear.max(0.), POWER_VALUE)
+}
+
+#[cfg(feature = "extended_range")]
+/// Gamma transfer function for Smpte 428, of a pixel
+fn smpte428_from_linear_tristimulus(linear: Rgb<f32>) -> Rgb<f32> {
+    const POWER_VALUE: f32 = 1.0 / 2.6;
+    let rgb = Rgb::new(
+        0.91655527974030934 * linear.r.max(0.),
+        0.91655527974030934 * linear.g.max(0.),
+        0.91655527974030934 * linear.b.max(0.),
+    );
+    bounded_powf_tristimulus(rgb, POWER_VALUE)
 }
 
 /// Linear transfer function for Smpte 240
@@ -399,11 +420,84 @@ fn pure_gamma_function(x: f64, gamma: f64) -> f64 {
     }
 }
 
+/// Whether `dirty_powf` can represent a power of `x` with an exponent up to 2.8 in magnitude:
+/// `x` from 2^-44 to 2^44. It is then also positive, and not zero or NaN.
+#[cfg(feature = "extended_range")]
+#[inline(always)]
+fn is_fast_powf(x: f32) -> bool {
+    x.to_bits().wrapping_sub(0x2980_0000) <= 0x2c00_0000
+}
+
+#[cfg(feature = "extended_range")]
+#[cold]
+#[inline(never)]
+fn exact_powf(x: f32, exponent: f32) -> f32 {
+    f_powf(x, exponent)
+}
+
+/// A power with an exponent up to 2.8 in magnitude.
+#[cfg(feature = "extended_range")]
+#[inline(always)]
+fn bounded_powf(x: f32, exponent: f32) -> f32 {
+    // Only positive zero has a fixed result for every supported positive exponent.
+    // Negative zero keeps the exact evaluator's exponent-dependent sign.
+    if x.to_bits() == 0 {
+        0.0
+    } else if is_fast_powf(x) {
+        // `abs` shows the optimizer that `x` is positive, which drops the negative base handling.
+        dirty_powf(x.abs(), exponent)
+    } else {
+        exact_powf(x, exponent)
+    }
+}
+
+/// [`bounded_powf`] of a pixel. One test for the pixel keeps the common case free of branches
+/// around each power, and the results don't depend on the pixel's other channels.
+#[cfg(feature = "extended_range")]
+#[inline(always)]
+fn bounded_powf_tristimulus(rgb: Rgb<f32>, exponent: f32) -> Rgb<f32> {
+    let distance = |x: f32| x.to_bits().wrapping_sub(0x2980_0000);
+    if (distance(rgb.r) | distance(rgb.g) | distance(rgb.b)) <= 0x2c00_0000 {
+        Rgb::new(
+            dirty_powf(rgb.r.abs(), exponent),
+            dirty_powf(rgb.g.abs(), exponent),
+            dirty_powf(rgb.b.abs(), exponent),
+        )
+    } else {
+        Rgb::new(
+            bounded_powf(rgb.r, exponent),
+            bounded_powf(rgb.g, exponent),
+            bounded_powf(rgb.b, exponent),
+        )
+    }
+}
+
 #[cfg(feature = "extended_range")]
 #[inline(always)]
 /// Pure gamma transfer function for gamma 2.2
 fn pure_gamma_function_f(x: f32, gamma: f32) -> f32 {
-    if x <= 0. { 0. } else { dirty_powf(x, gamma) }
+    if x <= 0. { 0. } else { bounded_powf(x, gamma) }
+}
+
+/// Preserve the scalar negative/zero clamp while admitting all positive
+/// channels with one conservative interval check.
+#[cfg(feature = "extended_range")]
+#[inline(always)]
+fn pure_gamma_tristimulus(rgb: Rgb<f32>, exponent: f32) -> Rgb<f32> {
+    let distance = |x: f32| x.to_bits().wrapping_sub(0x2980_0000);
+    if (distance(rgb.r) | distance(rgb.g) | distance(rgb.b)) <= 0x2c00_0000 {
+        Rgb::new(
+            dirty_powf(rgb.r.abs(), exponent),
+            dirty_powf(rgb.g.abs(), exponent),
+            dirty_powf(rgb.b.abs(), exponent),
+        )
+    } else {
+        Rgb::new(
+            pure_gamma_function_f(rgb.r, exponent),
+            pure_gamma_function_f(rgb.g, exponent),
+            pure_gamma_function_f(rgb.b, exponent),
+        )
+    }
 }
 
 pub(crate) fn iec61966_to_linear(gamma: f64) -> f64 {
@@ -723,20 +817,8 @@ impl TransferCharacteristics {
                 )
             },
             TransferCharacteristics::Unspecified => |x| Rgb::new(x.r, x.g, x.b),
-            TransferCharacteristics::Bt470M => |x| {
-                Rgb::new(
-                    gamma2p2_from_linear_f(x.r),
-                    gamma2p2_from_linear_f(x.g),
-                    gamma2p2_from_linear_f(x.b),
-                )
-            },
-            TransferCharacteristics::Bt470Bg => |x| {
-                Rgb::new(
-                    gamma2p8_from_linear_f(x.r),
-                    gamma2p8_from_linear_f(x.g),
-                    gamma2p8_from_linear_f(x.b),
-                )
-            },
+            TransferCharacteristics::Bt470M => |x| pure_gamma_tristimulus(x, 1. / 2.2),
+            TransferCharacteristics::Bt470Bg => |x| pure_gamma_tristimulus(x, 1. / 2.8),
             TransferCharacteristics::Smpte240 => |x| {
                 Rgb::new(
                     smpte240_from_linearf_extended(x.r),
@@ -787,13 +869,7 @@ impl TransferCharacteristics {
                     pq_from_linearf(x.b),
                 )
             },
-            TransferCharacteristics::Smpte428 => |x| {
-                Rgb::new(
-                    smpte428_from_linearf(x.r),
-                    smpte428_from_linearf(x.g),
-                    smpte428_from_linearf(x.b),
-                )
-            },
+            TransferCharacteristics::Smpte428 => smpte428_from_linear_tristimulus,
             TransferCharacteristics::Hlg => |x| {
                 Rgb::new(
                     hlg_from_linearf(x.r),
@@ -843,20 +919,8 @@ impl TransferCharacteristics {
                 )
             },
             TransferCharacteristics::Unspecified => |x| Rgb::new(x.r, x.g, x.b),
-            TransferCharacteristics::Bt470M => |x| {
-                Rgb::new(
-                    gamma2p2_to_linear_f(x.r),
-                    gamma2p2_to_linear_f(x.g),
-                    gamma2p2_to_linear_f(x.b),
-                )
-            },
-            TransferCharacteristics::Bt470Bg => |x| {
-                Rgb::new(
-                    gamma2p8_to_linear_f(x.r),
-                    gamma2p8_to_linear_f(x.g),
-                    gamma2p8_to_linear_f(x.b),
-                )
-            },
+            TransferCharacteristics::Bt470M => |x| pure_gamma_tristimulus(x, 2.2),
+            TransferCharacteristics::Bt470Bg => |x| pure_gamma_tristimulus(x, 2.8),
             TransferCharacteristics::Smpte240 => |x| {
                 Rgb::new(
                     smpte240_to_linearf_extended(x.r),
@@ -903,13 +967,7 @@ impl TransferCharacteristics {
             TransferCharacteristics::Smpte2084 => {
                 |x| Rgb::new(pq_to_linearf(x.r), pq_to_linearf(x.g), pq_to_linearf(x.b))
             }
-            TransferCharacteristics::Smpte428 => |x| {
-                Rgb::new(
-                    smpte428_to_linearf_extended(x.r),
-                    smpte428_to_linearf_extended(x.g),
-                    smpte428_to_linearf_extended(x.b),
-                )
-            },
+            TransferCharacteristics::Smpte428 => smpte428_to_linear_tristimulus,
             TransferCharacteristics::Hlg => |x| {
                 Rgb::new(
                     hlg_to_linearf(x.r),
@@ -998,6 +1056,53 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "extended_range")]
+    fn bounded_power_retains_signed_zero_semantics() {
+        for exponent in [2.2, 1. / 2.2, 2.8, 1. / 2.8, 2.6, 1. / 2.6] {
+            for x in [0f32, -0.0] {
+                assert_eq!(
+                    bounded_powf(x, exponent).to_bits(),
+                    f_powf(x, exponent).to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn pure_gamma_pixel_matches_scalar_with_mixed_boundaries() {
+        for exponent in [2.2, 1. / 2.2, 2.8, 1. / 2.8] {
+            for x in [
+                0f32,
+                -0.,
+                -0.5,
+                f32::from_bits(1),
+                1e-30,
+                0.5,
+                1.,
+                f32::MAX,
+                f32::INFINITY,
+                f32::NAN,
+            ] {
+                let input = Rgb::new(x, 0.5, 0.0);
+                let output = pure_gamma_tristimulus(input, exponent);
+                for (value, actual) in [
+                    (input.r, output.r),
+                    (input.g, output.g),
+                    (input.b, output.b),
+                ] {
+                    let expected = pure_gamma_function_f(value, exponent);
+                    if expected.is_nan() {
+                        assert!(actual.is_nan());
+                    } else {
+                        assert_eq!(actual.to_bits(), expected.to_bits());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn integer_gamma_table_rounds_to_nearest() {
         const N: usize = 4096;
         for tc in [
@@ -1008,6 +1113,27 @@ mod tests {
             for (v, &entry) in table.iter().take(N).enumerate() {
                 let expected = ((tc.gamma(v as f64 / (N - 1) as f64) * 255.0) as f32).round();
                 assert_eq!(entry, expected as u8, "{tc:?} entry {v}");
+            }
+        }
+    }
+
+    /// A pixel's channels take the same result as single samples, whichever path the pixel takes.
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn smpte428_pixel_matches_its_single_samples() {
+        for sample in [0f32, 1e-30, 1e-20, 1e-3, 0.5, 1., 2., 1e20, -0.5] {
+            for other in [0.5f32, 0.] {
+                let pixel = Rgb::new(sample, other, sample);
+                let linear = smpte428_to_linear_tristimulus(pixel);
+                let gamma = smpte428_from_linear_tristimulus(pixel);
+                for (got, channel) in [(linear.r, sample), (linear.g, other), (linear.b, sample)] {
+                    let single = smpte428_to_linearf_extended(channel);
+                    assert_eq!(got.to_bits(), single.to_bits(), "{channel}");
+                }
+                for (got, channel) in [(gamma.r, sample), (gamma.g, other), (gamma.b, sample)] {
+                    let single = smpte428_from_linearf(channel);
+                    assert_eq!(got.to_bits(), single.to_bits(), "{channel}");
+                }
             }
         }
     }
