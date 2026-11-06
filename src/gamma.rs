@@ -439,8 +439,10 @@ fn exact_powf(x: f32, exponent: f32) -> f32 {
 #[cfg(feature = "extended_range")]
 #[inline(always)]
 fn bounded_powf(x: f32, exponent: f32) -> f32 {
-    if x == 0.0 {
-        x
+    // Only positive zero has a fixed result for every supported positive exponent.
+    // Negative zero keeps the exact evaluator's exponent-dependent sign.
+    if x.to_bits() == 0 {
+        0.0
     } else if is_fast_powf(x) {
         // `abs` shows the optimizer that `x` is positive, which drops the negative base handling.
         dirty_powf(x.abs(), exponent)
@@ -1054,6 +1056,19 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "extended_range")]
+    #[test]
+    #[cfg(feature = "extended_range")]
+    fn bounded_power_retains_signed_zero_semantics() {
+        for exponent in [2.2, 1. / 2.2, 2.8, 1. / 2.8, 2.6, 1. / 2.6] {
+            for x in [0f32, -0.0] {
+                assert_eq!(
+                    bounded_powf(x, exponent).to_bits(),
+                    f_powf(x, exponent).to_bits()
+                );
+            }
+        }
+    }
+
     #[test]
     fn pure_gamma_pixel_matches_scalar_with_mixed_boundaries() {
         for exponent in [2.2, 1. / 2.2, 2.8, 1. / 2.8] {
