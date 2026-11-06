@@ -1457,7 +1457,7 @@ pub(crate) struct ToneCurveEvaluatorPureGamma {
     gamma: f32,
     /// The magnitudes `dirty_powf` can represent the power of, which leave its result a normal
     /// `f32`, as bit patterns: the smallest, and the distance to the largest. Anything else,
-    /// zero, subnormals, infinity and NaN among them, takes `f_powf`.
+    /// subnormals, infinity and NaN among them, takes `f_powf`. Zero is handled separately.
     fast_min_bits: u32,
     fast_span: u32,
 }
@@ -1494,10 +1494,20 @@ impl ToneCurveEvaluatorPureGamma {
         f_powf(x.abs(), self.gamma).copysign(x)
     }
 
+    #[cold]
+    #[inline(never)]
+    fn fallback_rgb(&self, rgb: Rgb<f32>) -> Rgb<f32> {
+        Rgb::new(
+            self.odd_pure_gamma(rgb.r),
+            self.odd_pure_gamma(rgb.g),
+            self.odd_pure_gamma(rgb.b),
+        )
+    }
+
     #[inline(always)]
     fn odd_pure_gamma(&self, x: f32) -> f32 {
         if x == 0.0 {
-            x
+            if self.gamma == 0.0 { self.exact(x) } else { x }
         } else if self.is_fast(x) {
             self.fast(x)
         } else {
@@ -1542,11 +1552,7 @@ impl ToneCurveEvaluator for ToneCurveEvaluatorPureGamma {
         if (distance(rgb.r) | distance(rgb.g) | distance(rgb.b)) <= self.fast_span {
             Rgb::new(self.fast(rgb.r), self.fast(rgb.g), self.fast(rgb.b))
         } else {
-            Rgb::new(
-                self.odd_pure_gamma(rgb.r),
-                self.odd_pure_gamma(rgb.g),
-                self.odd_pure_gamma(rgb.b),
-            )
+            self.fallback_rgb(rgb)
         }
     }
 
@@ -1858,6 +1864,18 @@ mod tests {
                 );
                 assert!(evaluator.evaluate_value(f32::NAN).is_nan(), "{exponent}");
             }
+        }
+    }
+
+    #[test]
+    fn zero_exponent_retains_exact_zero_semantics() {
+        let curve = curve_from_gamma(0.0);
+        let evaluator = curve.make_linear_evaluator().unwrap();
+        for x in [0f32, -0.0] {
+            let expected = f_powf(x.abs(), 0.0).copysign(x);
+            assert_eq!(evaluator.evaluate_value(x).to_bits(), expected.to_bits());
+            let rgb = evaluator.evaluate_tristimulus(Rgb::new(x, 0.5, -0.5));
+            assert_eq!(rgb.r.to_bits(), expected.to_bits());
         }
     }
 
