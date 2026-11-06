@@ -477,6 +477,27 @@ fn pure_gamma_function_f(x: f32, gamma: f32) -> f32 {
     if x <= 0. { 0. } else { bounded_powf(x, gamma) }
 }
 
+/// Preserve the scalar negative/zero clamp while admitting all positive
+/// channels with one conservative interval check.
+#[cfg(feature = "extended_range")]
+#[inline(always)]
+fn pure_gamma_tristimulus(rgb: Rgb<f32>, exponent: f32) -> Rgb<f32> {
+    let distance = |x: f32| x.to_bits().wrapping_sub(0x2980_0000);
+    if (distance(rgb.r) | distance(rgb.g) | distance(rgb.b)) <= 0x2c00_0000 {
+        Rgb::new(
+            dirty_powf(rgb.r.abs(), exponent),
+            dirty_powf(rgb.g.abs(), exponent),
+            dirty_powf(rgb.b.abs(), exponent),
+        )
+    } else {
+        Rgb::new(
+            pure_gamma_function_f(rgb.r, exponent),
+            pure_gamma_function_f(rgb.g, exponent),
+            pure_gamma_function_f(rgb.b, exponent),
+        )
+    }
+}
+
 pub(crate) fn iec61966_to_linear(gamma: f64) -> f64 {
     if gamma < -4.5f64 * 0.018053968510807f64 {
         f_pow(
@@ -794,20 +815,8 @@ impl TransferCharacteristics {
                 )
             },
             TransferCharacteristics::Unspecified => |x| Rgb::new(x.r, x.g, x.b),
-            TransferCharacteristics::Bt470M => |x| {
-                Rgb::new(
-                    gamma2p2_from_linear_f(x.r),
-                    gamma2p2_from_linear_f(x.g),
-                    gamma2p2_from_linear_f(x.b),
-                )
-            },
-            TransferCharacteristics::Bt470Bg => |x| {
-                Rgb::new(
-                    gamma2p8_from_linear_f(x.r),
-                    gamma2p8_from_linear_f(x.g),
-                    gamma2p8_from_linear_f(x.b),
-                )
-            },
+            TransferCharacteristics::Bt470M => |x| pure_gamma_tristimulus(x, 1. / 2.2),
+            TransferCharacteristics::Bt470Bg => |x| pure_gamma_tristimulus(x, 1. / 2.8),
             TransferCharacteristics::Smpte240 => |x| {
                 Rgb::new(
                     smpte240_from_linearf_extended(x.r),
@@ -908,20 +917,8 @@ impl TransferCharacteristics {
                 )
             },
             TransferCharacteristics::Unspecified => |x| Rgb::new(x.r, x.g, x.b),
-            TransferCharacteristics::Bt470M => |x| {
-                Rgb::new(
-                    gamma2p2_to_linear_f(x.r),
-                    gamma2p2_to_linear_f(x.g),
-                    gamma2p2_to_linear_f(x.b),
-                )
-            },
-            TransferCharacteristics::Bt470Bg => |x| {
-                Rgb::new(
-                    gamma2p8_to_linear_f(x.r),
-                    gamma2p8_to_linear_f(x.g),
-                    gamma2p8_to_linear_f(x.b),
-                )
-            },
+            TransferCharacteristics::Bt470M => |x| pure_gamma_tristimulus(x, 2.2),
+            TransferCharacteristics::Bt470Bg => |x| pure_gamma_tristimulus(x, 2.8),
             TransferCharacteristics::Smpte240 => |x| {
                 Rgb::new(
                     smpte240_to_linearf_extended(x.r),
@@ -1055,6 +1052,40 @@ impl TransferCharacteristics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "extended_range")]
+    #[test]
+    fn pure_gamma_pixel_matches_scalar_with_mixed_boundaries() {
+        for exponent in [2.2, 1. / 2.2, 2.8, 1. / 2.8] {
+            for x in [
+                0f32,
+                -0.,
+                -0.5,
+                f32::from_bits(1),
+                1e-30,
+                0.5,
+                1.,
+                f32::MAX,
+                f32::INFINITY,
+                f32::NAN,
+            ] {
+                let input = Rgb::new(x, 0.5, 0.0);
+                let output = pure_gamma_tristimulus(input, exponent);
+                for (value, actual) in [
+                    (input.r, output.r),
+                    (input.g, output.g),
+                    (input.b, output.b),
+                ] {
+                    let expected = pure_gamma_function_f(value, exponent);
+                    if expected.is_nan() {
+                        assert!(actual.is_nan());
+                    } else {
+                        assert_eq!(actual.to_bits(), expected.to_bits());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn integer_gamma_table_rounds_to_nearest() {
