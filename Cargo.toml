@@ -95,3 +95,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [profile.profiling]
 inherits = "release"
 debug = true
+
+[[example]]
+name = "extended_gamma"
+required-features = ["extended_range"]
