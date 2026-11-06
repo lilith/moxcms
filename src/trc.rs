@@ -1496,7 +1496,9 @@ impl ToneCurveEvaluatorPureGamma {
 
     #[inline(always)]
     fn odd_pure_gamma(&self, x: f32) -> f32 {
-        if self.is_fast(x) {
+        if x == 0.0 {
+            x
+        } else if self.is_fast(x) {
             self.fast(x)
         } else {
             self.exact(x)
@@ -1533,8 +1535,11 @@ impl ToneCurveEvaluator for ToneCurveParametricEvaluator {
 
 impl ToneCurveEvaluator for ToneCurveEvaluatorPureGamma {
     fn evaluate_tristimulus(&self, rgb: Rgb<f32>) -> Rgb<f32> {
-        // One test for the pixel keeps the common case free of branches around each power.
-        if self.is_fast(rgb.r) & self.is_fast(rgb.g) & self.is_fast(rgb.b) {
+        // The OR is at least each unsigned distance, so passing one comparison
+        // proves that all channels are inside the fast interval. It may reject
+        // some valid combinations; the per-channel path preserves their bits.
+        let distance = |x: f32| (x.to_bits() & 0x7fff_ffff).wrapping_sub(self.fast_min_bits);
+        if (distance(rgb.r) | distance(rgb.g) | distance(rgb.b)) <= self.fast_span {
             Rgb::new(self.fast(rgb.r), self.fast(rgb.g), self.fast(rgb.b))
         } else {
             Rgb::new(

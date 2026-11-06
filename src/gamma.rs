@@ -439,7 +439,9 @@ fn exact_powf(x: f32, exponent: f32) -> f32 {
 #[cfg(feature = "extended_range")]
 #[inline(always)]
 fn bounded_powf(x: f32, exponent: f32) -> f32 {
-    if is_fast_powf(x) {
+    if x == 0.0 {
+        x
+    } else if is_fast_powf(x) {
         // `abs` shows the optimizer that `x` is positive, which drops the negative base handling.
         dirty_powf(x.abs(), exponent)
     } else {
@@ -452,7 +454,8 @@ fn bounded_powf(x: f32, exponent: f32) -> f32 {
 #[cfg(feature = "extended_range")]
 #[inline(always)]
 fn bounded_powf_tristimulus(rgb: Rgb<f32>, exponent: f32) -> Rgb<f32> {
-    if is_fast_powf(rgb.r) & is_fast_powf(rgb.g) & is_fast_powf(rgb.b) {
+    let distance = |x: f32| x.to_bits().wrapping_sub(0x2980_0000);
+    if (distance(rgb.r) | distance(rgb.g) | distance(rgb.b)) <= 0x2c00_0000 {
         Rgb::new(
             dirty_powf(rgb.r.abs(), exponent),
             dirty_powf(rgb.g.abs(), exponent),
